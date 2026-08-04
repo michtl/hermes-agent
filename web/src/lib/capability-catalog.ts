@@ -296,9 +296,14 @@ export function mergeCapabilityToolkit(
 ): MergedCapabilityToolkit {
   const catalogEntry = catalogBySlug.get(toolkit.slug);
   const description = toolkit.description ?? catalogEntry?.description ?? "";
+  // `category` has the same provenance as `description` — the server forwards it straight from the
+  // upstream catalog — so it gets the same scrub. Every server-supplied free-text field that
+  // reaches the DOM must pass through here; a local curated value is safe but is scrubbed anyway
+  // rather than branching, so a future field cannot be added on the unscrubbed path by accident.
+  const category = catalogEntry?.category ?? toolkit.category ?? "Other";
   return {
     ...toolkit,
-    category: catalogEntry?.category ?? toolkit.category ?? "Other",
+    category: scrubVendorMentions(category),
     brand: catalogEntry?.brand ?? FALLBACK_TOOLKIT_BRAND,
     description: scrubVendorMentions(description),
   };
