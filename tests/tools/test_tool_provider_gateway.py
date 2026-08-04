@@ -20,6 +20,23 @@ def _load_tool_module(module_name: str, filename: str):
     return module
 
 
+# These modules are loaded by path under a synthetic `tools` package, to avoid importing the real
+# package's heavy dependency graph. That requires temporarily owning shared sys.modules names, which
+# other test files also import — so the entries are restored IMMEDIATELY after loading rather than
+# in a teardown fixture. A fixture would be far too late: pytest imports every test module during
+# collection, before any test runs, so the substitutions would still be in place while a sibling
+# file's tests execute, and that file would monkeypatch these stubs instead of the real modules.
+#
+# Restoring straight away is safe because the loaded module objects are already bound to this
+# file's globals, and tool_provider_gateway resolves its own `from tools.managed_tool_gateway ...`
+# import at exec time (its only runtime import is httpx).
+# The snapshot covers every `tools*` entry rather than just the two loaded below, because executing
+# them pulls in further submodules transitively (tools.tool_backend_helpers, for one) which land in
+# sys.modules under the synthetic package and would otherwise leak just as badly.
+_ORIGINAL_MODULES = {
+    name: module for name, module in sys.modules.items() if name == "tools" or name.startswith("tools.")
+}
+
 tools_package = types.ModuleType("tools")
 tools_package.__path__ = [str(TOOLS_DIR)]
 sys.modules["tools"] = tools_package
@@ -31,6 +48,12 @@ tool_provider_gateway = _load_tool_module(
     "tools.tool_provider_gateway",
     "tool_provider_gateway.py",
 )
+
+for _name in [name for name in sys.modules if name == "tools" or name.startswith("tools.")]:
+    if _name in _ORIGINAL_MODULES:
+        sys.modules[_name] = _ORIGINAL_MODULES[_name]
+    else:
+        del sys.modules[_name]
 
 
 def _config(origin: str = "https://tools-gateway.example.com"):
