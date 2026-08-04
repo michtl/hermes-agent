@@ -1,0 +1,496 @@
+{
+  "route": "search",
+  "label": "broad-googlecalendar",
+  "status": 200,
+  "elapsed_s": 2.4217,
+  "body": {
+    "context_id": "trs_0y6UtT4z9t3M",
+    "results": [
+      {
+        "use_case": "create a google calendar event tomorrow at 3pm",
+        "tools": [
+          {
+            "slug": "GOOGLECALENDAR_CREATE_EVENT",
+            "toolkit": "googlecalendar",
+            "description": "Create a Google Calendar event using start_datetime plus duration fields. The organizer is added as an attendee unless exclude_organizer is True. By default adds Google Meet link (works for Workspace, gracefully falls back for personal Gmail). Attendees can be email strings (required) or objects with email and optional fields. No conflict checking is performed; use GOOGLECALENDAR_FREE_BUSY_QUERY to detect overlaps before creating. Returns event id and htmlLink nested under data.response_data. Example: { \"start_datetime\": \"2025-01-16T13:00:00\", \"timezone\": \"America/New_York\", \"event_duration_hour\": 1, \"event_duration_minutes\": 30, \"summary\": \"Client sync\", \"attendees\": [\"required@example.com\", {\"email\": \"optional@example.com\", \"optional\": true}] }",
+            "connected": false,
+            "input_schema": {
+              "type": "object",
+              "required": [
+                "start_datetime"
+              ],
+              "properties": {
+                "summary": {
+                  "type": "string",
+                  "description": "Summary (title) of the event."
+                },
+                "location": {
+                  "type": "string",
+                  "description": "Geographic location of the event as free-form text."
+                },
+                "timezone": {
+                  "type": "string",
+                  "description": "IANA timezone name from the timezone database (e.g., 'America/New_York', 'Europe/London', 'Asia/Jerusalem', 'UTC'). Required if datetime is naive. For recurring events, start and end must include a timeZone. If not provided, UTC is used. If datetime includes timezone info (Z or offset), this field is optional and defaults to UTC. IMPORTANT: Must be a valid IANA timezone identifier. Values like 'EST', 'PST', 'ISRAEL TIME', or other abbreviations are NOT valid IANA timezone names."
+                },
+                "attendees": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      }
+                    ]
+                  },
+                  "description": "List of attendees. Each attendee can be either: (1) A string email address (e.g., 'user@example.com'), or (2) An object with 'email' (required), 'optional' (boolean, default false), 'displayName' (string), 'comment' (string), 'additionalGuests' (integer), and 'resource' (boolean). To mark an attendee as optional (not required), use object format: {'email': 'user@example.com', 'optional': true}. IMPORTANT: Only valid email addresses are accepted. Plain names cannot be used."
+                },
+                "eventType": {
+                  "enum": [
+                    "birthday",
+                    "default",
+                    "focusTime",
+                    "outOfOffice",
+                    "workingLocation"
+                  ],
+                  "type": "string",
+                  "default": "default",
+                  "description": "Type of the event, immutable post-creation. 'workingLocation' (REQUIRES Google Workspace Enterprise). Note: 'fromGmail' events cannot be created via API."
+                },
+                "recurrence": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "List of RRULE, EXRULE, RDATE, EXDATE lines for recurring events. Supported frequencies: DAILY, WEEKLY, MONTHLY, YEARLY. For recurring events, start.timeZone and end.timeZone must be present. UNTIL values follow RFC 5545: date-only (YYYYMMDD) for all-day events, or UTC datetime with Z suffix (YYYYMMDDTHHMMSSZ) for timed events. UNTIL values with time but missing Z suffix are auto-corrected. Provide an empty list to remove recurrence so the event becomes non-recurring."
+                },
+                "visibility": {
+                  "enum": [
+                    "default",
+                    "public",
+                    "private",
+                    "confidential"
+                  ],
+                  "type": "string",
+                  "default": "default",
+                  "description": "Event visibility: 'default', 'public', 'private', or 'confidential'."
+                },
+                "calendar_id": {
+                  "type": "string",
+                  "default": "primary",
+                  "examples": [
+                    "primary",
+                    "abcdefghijklmnopqrstuvwxyz@group.calendar.google.com"
+                  ],
+                  "description": "Calendar identifier. Use 'primary' (recommended) for the user's main calendar. Alternatively, use a calendar ID from the user's accessible calendar list. Calendar IDs look like email addresses (e.g., 'xyz@group.calendar.google.com' for shared calendars). Important: Arbitrary email addresses will NOT work - the calendar must exist in the user's calendar list with appropriate access permissions. Use GOOGLECALENDAR_LIST_CALENDARS to retrieve valid calendar IDs."
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Description of the event. Can contain HTML. Optional. Must be omitted for 'birthday' event type."
+                },
+                "end_datetime": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(:\\d{2})?(\\.\\d+)?(Z|[+-]\\d{1,2}(:?\\d{2})?)?$",
+                  "description": "Event end time in ISO 8601 format: YYYY-MM-DDTHH:MM:SS. When provided, this parameter takes precedence over event_duration_hour and event_duration_minutes. If not provided, the end time is calculated using start_datetime + duration. Must be after start_datetime. Fractional seconds and timezone info will be automatically stripped if provided. Examples: '2025-01-16T14:30:00', '2025-01-16T14:30'."
+                },
+                "send_updates": {
+                  "enum": [
+                    "all",
+                    "externalOnly",
+                    "none"
+                  ],
+                  "type": "string",
+                  "description": "Options for who should receive notifications about event changes."
+                },
+                "transparency": {
+                  "enum": [
+                    "opaque",
+                    "transparent"
+                  ],
+                  "type": "string",
+                  "default": "opaque",
+                  "description": "'opaque' (busy) or 'transparent' (available)."
+                },
+                "start_datetime": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}(:\\d{2})?(\\.\\d+)?(Z|[+-]\\d{1,2}(:?\\d{2})?)?$",
+                  "description": "REQUIRED. Event start time in ISO 8601 format: YYYY-MM-DDTHH:MM:SS. IMPORTANT: Natural language expressions like 'tomorrow', 'next Monday', '2pm tomorrow' are NOT supported and will be rejected. You must provide the exact date and time in ISO format. Fractional seconds (e.g., .000) and timezone info (Z, +, -) will be automatically stripped if provided. Examples: '2025-01-16T13:00:00', '2025-01-16T13:00'."
+                },
+                "guestsCanModify": {
+                  "type": "boolean",
+                  "description": "If True, guests can modify the event."
+                },
+                "exclude_organizer": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "If True, the organizer will NOT be added as an attendee. Default is False (organizer is included)."
+                },
+                "birthdayProperties": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "birthday",
+                        "anniversary",
+                        "other"
+                      ],
+                      "type": "string",
+                      "default": "birthday",
+                      "description": "Type of birthday event: 'birthday', 'anniversary', or 'other'. Defaults to 'birthday'."
+                    },
+                    "contact": {
+                      "type": "string",
+                      "description": "Contact ID in format 'people/c12345' from Google People API. REQUIRED when type is 'anniversary' or 'other'. MUST BE OMITTED when type is 'birthday' (the API forbids contact field for type='birthday')."
+                    },
+                    "customTypeName": {
+                      "type": "string",
+                      "description": "Custom type name when type is 'other'. Requires valid contact field."
+                    }
+                  },
+                  "description": "Properties for birthday events.",
+                  "additionalProperties": false
+                },
+                "create_meeting_room": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Defaults to True. When True, for CREATE operations creates a Google Meet link; for UPDATE operations preserves existing conference data if present, or adds a new Meet link if none exists. Google Workspace accounts will successfully receive a Meet link. Personal Gmail accounts and other unsupported accounts will gracefully fallback to creating an event without a Meet link when conference creation fails. Set to False to skip Meet link operations (won't create new or modify existing conference data). The fallback ensures event creation succeeds even when conference features are unavailable due to account limitations."
+                },
+                "event_duration_hour": {
+                  "type": "integer",
+                  "default": 0,
+                  "minimum": 0,
+                  "description": "Number of hours for the event duration. Supports multi-day events (e.g., 240 hours = 10 days). For durations under 1 hour, use event_duration_minutes instead. Ignored if end_datetime is provided."
+                },
+                "extended_properties": {
+                  "type": "object",
+                  "description": "Extended properties of the event for storing custom metadata. Contains 'private' (visible only on this calendar) and/or 'shared' (visible to all attendees) dictionaries mapping string keys to string values. Example: {'private': {'key1': 'value1'}, 'shared': {'key2': 'value2'}}",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "focusTimeProperties": {
+                  "type": "object",
+                  "properties": {
+                    "chatStatus": {
+                      "enum": [
+                        "active",
+                        "doNotDisturb"
+                      ],
+                      "type": "string",
+                      "description": "Chat status during focus time: 'active' or 'doNotDisturb'."
+                    },
+                    "declineMessage": {
+                      "type": "string",
+                      "description": "Message to include in declined meeting invitations. Only used when autoDeclineMode is set."
+                    },
+                    "autoDeclineMode": {
+                      "enum": [
+                        "declineNone",
+                        "declineAllConflictingInvitations",
+                        "declineOnlyNewConflictingInvitations"
+                      ],
+                      "type": "string",
+                      "description": "Auto decline mode: 'declineNone' (no invitations declined), 'declineAllConflictingInvitations' (all conflicting invitations declined), or 'declineOnlyNewConflictingInvitations' (only new conflicting invitations declined)."
+                    }
+                  },
+                  "description": "Properties for focusTime events. REQUIRES Google Workspace Enterprise account with Focus Time feature enabled.",
+                  "additionalProperties": false
+                },
+                "guestsCanInviteOthers": {
+                  "type": "boolean",
+                  "description": "Whether attendees other than the organizer can invite others to the event."
+                },
+                "outOfOfficeProperties": {
+                  "type": "object",
+                  "properties": {
+                    "declineMessage": {
+                      "type": "string",
+                      "description": "Message to include in declined meeting invitations. Only used when autoDeclineMode is set."
+                    },
+                    "autoDeclineMode": {
+                      "enum": [
+                        "declineNone",
+                        "declineAllConflictingInvitations",
+                        "declineOnlyNewConflictingInvitations"
+                      ],
+                      "type": "string",
+                      "description": "Auto decline mode: 'declineNone' (no invitations declined), 'declineAllConflictingInvitations' (all conflicting invitations declined), or 'declineOnlyNewConflictingInvitations' (only new conflicting invitations declined). RECURRING EVENT RESTRICTION: For recurring out-of-office events, ONLY 'declineOnlyNewConflictingInvitations' is allowed. Cannot use 'declineAllConflictingInvitations' for recurring OOO (Google Calendar prevents retroactively declining existing meetings). REQUIRES Google Workspace (paid business subscription, e.g., Business Starter at $6/user/month). Personal Gmail accounts cannot use this feature."
+                    }
+                  },
+                  "description": "Properties for outOfOffice events.",
+                  "additionalProperties": false
+                },
+                "event_duration_minutes": {
+                  "type": "integer",
+                  "default": 30,
+                  "maximum": 59,
+                  "minimum": 0,
+                  "description": "Duration in minutes (0-59 ONLY). NEVER use 60+ minutes - use event_duration_hour=1 instead. Maximum value is 59. Combined duration (hours + minutes) must be greater than 0. Ignored if end_datetime is provided."
+                },
+                "guestsCanSeeOtherGuests": {
+                  "type": "boolean",
+                  "description": "Whether attendees other than the organizer can see who the event's attendees are."
+                },
+                "workingLocationProperties": {
+                  "type": "object",
+                  "required": [
+                    "type"
+                  ],
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "homeOffice",
+                        "officeLocation",
+                        "customLocation"
+                      ],
+                      "type": "string",
+                      "description": "Type of working location ('homeOffice' | 'officeLocation' | 'customLocation')."
+                    },
+                    "homeOffice": {
+                      "type": "object",
+                      "properties": {},
+                      "description": "Empty object marker for home office working location.\n\nThis is used to indicate the user is working from home.\nGoogle Calendar API accepts an empty object for this field.",
+                      "additionalProperties": false
+                    },
+                    "customLocation": {
+                      "type": "object",
+                      "required": [
+                        "label"
+                      ],
+                      "properties": {
+                        "label": {
+                          "type": "string",
+                          "description": "Label for a custom working location (e.g., 'Client site')."
+                        }
+                      },
+                      "description": "Custom working location with a display label.",
+                      "additionalProperties": false
+                    },
+                    "officeLocation": {
+                      "type": "object",
+                      "properties": {
+                        "label": {
+                          "type": "string",
+                          "description": "Office name displayed in Calendar clients (e.g., building name)."
+                        },
+                        "deskId": {
+                          "type": "string",
+                          "description": "Optional desk identifier."
+                        },
+                        "floorId": {
+                          "type": "string",
+                          "description": "Optional floor identifier."
+                        },
+                        "buildingId": {
+                          "type": "string",
+                          "description": "Optional building identifier from org Resources."
+                        },
+                        "floorSectionId": {
+                          "type": "string",
+                          "description": "Optional floor section identifier."
+                        }
+                      },
+                      "description": "Office-based working location details.",
+                      "additionalProperties": false
+                    }
+                  },
+                  "description": "Properties for workingLocation events. REQUIRES Google Workspace Enterprise.\n\nConstraints discovered from testing:\n- Must set transparency='transparent' and visibility='public'\n- Description must be omitted\n- Depending on 'type', include one of 'homeOffice', 'officeLocation', or 'customLocation'",
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "slug": "GOOGLECALENDAR_LIST_CALENDARS",
+            "toolkit": "googlecalendar",
+            "description": "Retrieves calendars from the user's Google Calendar list, with options for pagination and filtering. Loop through all pages using nextPageToken until absent to avoid missing calendars. Use the primary flag and accessRole field from the response to identify calendars \u2014 display names are not valid calendar_id values. Read access (listing) does not imply write OAuth scopes.",
+            "connected": false,
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "page_token": {
+                  "type": "string",
+                  "examples": [
+                    " nextPageToken123"
+                  ],
+                  "description": "Token for the page of results to return, from a previous response."
+                },
+                "sync_token": {
+                  "type": "string",
+                  "examples": [
+                    "syncToken123"
+                  ],
+                  "description": "Sync token from a previous list request to get only changed entries; showDeleted, showHidden, and pageToken are ignored if provided. Also ignores minAccessRole. An HTTP 410 Gone response means the token has expired; perform a full resync by omitting sync_token."
+                },
+                "max_results": {
+                  "type": "integer",
+                  "default": 10,
+                  "maximum": 250,
+                  "minimum": 1,
+                  "examples": [
+                    25,
+                    100
+                  ],
+                  "description": "Maximum number of calendars to return per page. Max 250."
+                },
+                "show_hidden": {
+                  "type": "boolean",
+                  "default": false,
+                  "examples": [
+                    true,
+                    false
+                  ],
+                  "description": "Include calendars not typically shown in the UI."
+                },
+                "show_deleted": {
+                  "type": "boolean",
+                  "default": false,
+                  "examples": [
+                    true,
+                    false
+                  ],
+                  "description": "Include deleted calendars in the result."
+                },
+                "min_access_role": {
+                  "type": "string",
+                  "examples": [
+                    "reader",
+                    "owner"
+                  ],
+                  "description": "Minimum access role for calendars returned. Valid values are 'freeBusyReader', 'owner', 'reader', 'writer'. freeBusyReader calendars expose only free/busy slots \u2014 no event details and writes fail with 403. Omit this filter to include read-only calendars."
+                }
+              }
+            }
+          },
+          {
+            "slug": "GOOGLECALENDAR_FIND_FREE_SLOTS",
+            "toolkit": "googlecalendar",
+            "description": "Finds both free and busy time slots in Google Calendars for specified calendars within a defined time range. If `time_min` is not provided, defaults to the current timestamp in the specified timezone. If `time_max` is not provided, defaults to 23:59:59 of the day specified in `time_min` (if provided), otherwise defaults to 23:59:59 of the current day in the specified timezone. Returns busy intervals and calculates free slots by finding gaps between busy periods; `time_min` must precede `time_max` if both are provided. This action retrieves free and busy time slots for the specified calendars over a given time period. It analyzes the busy intervals from the calendars and provides calculated free slots based on the gaps in the busy periods. Returned free slots are unfiltered by duration; callers must filter intervals to those fully containing the required meeting length. No event metadata (titles, descriptions, links) is returned; use GOOGLECALENDAR_EVENTS_LIST for event details.",
+            "connected": false,
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": [
+                    "primary"
+                  ],
+                  "examples": [
+                    [
+                      "primary"
+                    ],
+                    [
+                      "primary",
+                      "user@example.com"
+                    ]
+                  ],
+                  "description": "List of calendar identifiers to query for free/busy information. Pass as a simple list of strings, e.g., ['primary'] or ['primary', 'user@example.com']. Valid values include: 'primary' (authenticated user's main calendar), calendar IDs from the user's calendar list (typically ending in @group.calendar.google.com), or email addresses of users whose free/busy information you want to query. The FreeBusy API will return error information for any calendars that are not accessible or invalid in the response under the 'errors' key for each calendar. Calendars omitted from `items` or inaccessible are treated as free (not unknown), which can silently produce incorrect availability results."
+                },
+                "time_max": {
+                  "type": "string",
+                  "examples": [
+                    "2024-12-06T18:00:00Z",
+                    "2024,12,06,18,00,00",
+                    "2024-12-06 18:00:00"
+                  ],
+                  "description": "End datetime for the query interval. Accepts ISO, comma-separated, or simple datetime formats. If provided without an explicit timezone, it is interpreted in the specified `timezone`. If not provided, defaults to 23:59:59 of the day specified in `time_min` (if provided), otherwise defaults to 23:59:59 of the current day in the specified `timezone`. Maximum span between time_min and time_max is approximately 90 days per Google Calendar freeBusy API limit. `time_max` is exclusive; to cover a full day, set `time_max` to 00:00:00 of the following day in the target timezone rather than 23:59:59."
+                },
+                "time_min": {
+                  "type": "string",
+                  "examples": [
+                    "2024-12-06T13:00:00Z",
+                    "2024,12,06,13,00,00",
+                    "2024-12-06 13:00:00"
+                  ],
+                  "description": "Start datetime for the query interval. Accepts ISO, comma-separated, or simple datetime formats. If provided without an explicit timezone, it is interpreted in the specified `timezone`. If not provided, defaults to the current timestamp in the specified `timezone` to ensure only future/bookable slots are returned. Maximum span between time_min and time_max is approximately 90 days per Google Calendar freeBusy API limit."
+                },
+                "timezone": {
+                  "type": "string",
+                  "default": "UTC",
+                  "examples": [
+                    "UTC",
+                    "America/New_York",
+                    "Europe/Berlin"
+                  ],
+                  "description": "IANA timezone identifier (e.g., 'America/New_York', 'Europe/London', 'Asia/Tokyo'). Determines how naive `time_min`/`time_max` are interpreted and the timezone used in the response for `timeMin`, `timeMax`, busy periods, and calculated free slots. Note: 'local' is not supported; use a specific IANA timezone name."
+                },
+                "group_expansion_max": {
+                  "type": "integer",
+                  "default": 100,
+                  "maximum": 100,
+                  "minimum": 1,
+                  "description": "Maximum calendar identifiers to return for a single group. Must be between 1 and 100 (inclusive). Values exceeding 100 will be rejected."
+                },
+                "calendar_expansion_max": {
+                  "type": "integer",
+                  "default": 50,
+                  "maximum": 50,
+                  "minimum": 1,
+                  "description": "Maximum calendars for which FreeBusy information is provided. Must be between 1 and 50 (inclusive). Values exceeding 50 will be rejected."
+                }
+              }
+            }
+          },
+          {
+            "slug": "GOOGLECALENDAR_FIND_EVENT",
+            "toolkit": "googlecalendar",
+            "description": "Finds events in a specified Google Calendar using text query, time ranges (event start/end, last mod...",
+            "connected": false
+          },
+          {
+            "slug": "GOOGLECALENDAR_PATCH_EVENT",
+            "toolkit": "googlecalendar",
+            "description": "Update specified fields of an existing event in a Google Calendar using patch semantics (array field...",
+            "connected": false
+          },
+          {
+            "slug": "GOOGLECALENDAR_DELETE_EVENT",
+            "toolkit": "googlecalendar",
+            "description": "Deletes a specified event by `event_id` from a Google Calendar (`calendar_id`); idempotent \u2014 a 404 f...",
+            "connected": false
+          },
+          {
+            "slug": "GOOGLECALENDAR_GET_CURRENT_DATE_TIME",
+            "toolkit": "googlecalendar",
+            "description": "Gets the current date and time, allowing for a specific timezone offset. Call this tool first before...",
+            "connected": false
+          }
+        ],
+        "plan": [
+          "[Optional (if time is relative or timezone is unclear)] [Prerequisite]: Resolve an explicit RFC3339 start/end in the intended timezone using GOOGLECALENDAR_GET_CURRENT_DATE_TIME (anchor \u201cnow\u201d before converting).",
+          "[Optional (if calendar may be unknown or write access is uncertain)] [Prerequisite]: Choose a writable calendar_id using GOOGLECALENDAR_LIST_CALENDARS (prefer accessRole that can write).",
+          "[Optional (if avoiding conflicts or duplicates)] [Prerequisite]: Check open time using GOOGLECALENDAR_FIND_FREE_SLOTS and/or search nearby matches using GOOGLECALENDAR_FIND_EVENT (use a bounded window and follow nextPageToken until done).",
+          "[Required] [Step]: Create the event using GOOGLECALENDAR_CREATE_EVENT (send start_datetime+timezone and end_datetime or duration; store event_id/link from nested response_data).",
+          "[Optional (if returned details are normalized or fields must be enforced)] [Next Step]: Adjust only needed fields using GOOGLECALENDAR_PATCH_EVENT (calendar_id+event_id; re-check start/end after patch).",
+          "[Optional (if created incorrectly; requires confirmation)] [Next Step]: Roll back by removing the event using GOOGLECALENDAR_DELETE_EVENT (calendar_id+event_id).",
+          "[Fallback (if GOOGLECALENDAR_CREATE_EVENT fails with 403 permissions/limits)] [Fallback]: Re-select a writable calendar via GOOGLECALENDAR_LIST_CALENDARS and retry GOOGLECALENDAR_CREATE_EVENT."
+        ],
+        "pitfalls": [
+          "[GOOGLECALENDAR_CREATE_EVENT] Rejects date-only inputs; start_datetime must be RFC3339 dateTime and end must be strictly after start (all-day events typically use next-day end).",
+          "[GOOGLECALENDAR_CREATE_EVENT] Important outputs are nested (commonly under response.data.response_data); do not expect id/link/start/end at top level.",
+          "[GOOGLECALENDAR_CREATE_EVENT] event_duration_minutes must be > 0 and <= 59; supplying end_datetime avoids unexpected duration handling.",
+          "[GOOGLECALENDAR_FIND_EVENT] Some responses nest matches deep (e.g., response.data.event_data.event_data); treat an empty list there as \u201cno matches,\u201d not an error.",
+          "[GOOGLECALENDAR_LIST_CALENDARS] Read-only calendars can trigger 403 on GOOGLECALENDAR_CREATE_EVENT; filter by writable accessRole before creating."
+        ]
+      }
+    ],
+    "connections": [
+      {
+        "toolkit": "googlecalendar",
+        "connected": false
+      }
+    ],
+    "guidance": [
+      "2) Extract validated plan steps returned above, acknowledge each step, then execute sequentially updating current_step parameter. Check pitfalls during execution."
+    ]
+  },
+  "vendor_hit_count": 0
+}

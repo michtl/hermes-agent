@@ -1,0 +1,9 @@
+# Isolated HERMES_HOME profiles — contain live tokens and the OpenRouter key.
+.homes/
+
+# Captured transcripts are redacted on write, but keep them out of git by
+# default; commit one deliberately if it is evidence for a finding.
+transcripts/
+
+__pycache__/
+*.pyc

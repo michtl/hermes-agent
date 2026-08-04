@@ -1,0 +1,35 @@
+{
+  "route": "connections",
+  "label": "status-all-enabled",
+  "status": 200,
+  "elapsed_s": 0.4479,
+  "body": {
+    "connections": [
+      {
+        "toolkit": "hackernews",
+        "status": "disconnected"
+      },
+      {
+        "toolkit": "github",
+        "status": "pending"
+      },
+      {
+        "toolkit": "googlecalendar",
+        "status": "disconnected"
+      },
+      {
+        "toolkit": "gmail",
+        "status": "disconnected"
+      },
+      {
+        "toolkit": "notion",
+        "status": "disconnected"
+      },
+      {
+        "toolkit": "slack",
+        "status": "disconnected"
+      }
+    ]
+  },
+  "vendor_hit_count": 0
+}

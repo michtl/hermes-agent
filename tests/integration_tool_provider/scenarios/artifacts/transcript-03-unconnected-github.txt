@@ -1,0 +1,45 @@
+# harness transcript
+# profile=scen target=local model=anthropic/claude-fable-5
+# gateway=http://tools-gateway.localhost:3009
+# token_fingerprint=sha256:7d2a77373a3f
+# captured=20260804T194514Z
+# secrets redacted on capture; see redaction self-check below
+
+$ hermes -z "Use the managed external-app tool bridge, and ONLY it.\n\nList the 3 most recently updated GitHub repositories owned by my account.\nDo this through the bridge (tool_search / tool_call / the app-connections tool).\n\nHard constraints:\n- Do NOT use the terminal tool, curl, bash, python, WebSearch, WebFetch, the gh CLI,\n  or any direct public HTTP API.\n- If you cannot complete it, say EXACTLY why in the user's terms and quote the exact\n  error text or instruction the bridge gave you, verbatim, in a fenced block.\n- Do not ask me questions; just do it.\n\nEnd your reply with the line: GH_RESULT <ok|blocked>"
+exit=0 elapsed=77.9s
+--- stdout ---
+I can't complete this through the bridge. Here's exactly what happened:
+
+1. The bridge reported the GitHub toolkit as disconnected, so I started its sign-in flow. It gave me this authorization link (you'd need to open it and authorize):
+
+```
+https://connect.composio.dev/link/lk_B6HKoJGYrfFw
+```
+
+along with this instruction:
+
+```
+Open the connect_url(s) above in a browser to sign in and authorize access. After the user confirms they finished, call app_connections(action='status', toolkits=['github']) to verify — poll at most 6 times, about 10 seconds apart, before telling the user the connection did not complete.
+```
+
+2. I polled the connection status 6 times as instructed; every poll returned:
+
+```
+{"connections": [{"toolkit": "github", "status": "pending"}]}
+```
+
+3. I then attempted the repository listing anyway (GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER, sorted by updated, desc, owner-only, 3 results). It failed with:
+
+```
+{"success": false, "context_id": "trs_0y6UtT4z9t3M", "error": "the tool call failed"}
+```
+
+In plain terms: your GitHub account has never been authorized with the bridge, the authorization never completed on your end (nobody clicked through the sign-in link), and the bridge cannot call GitHub without that authorization. Since you barred every non-bridge path (terminal, curl, gh, direct API), there is no way for me to list your repositories until the link above is opened and GitHub access is approved. Once that's done, re-run the request and it will work.
+
+GH_RESULT blocked
+
+--- stderr ---
+
+
+
+# redaction self-check: CLEAN

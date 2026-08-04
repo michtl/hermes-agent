@@ -1,0 +1,15 @@
+{
+  "route": "search",
+  "label": "broad-hn",
+  "status": 200,
+  "elapsed_s": 3.642,
+  "body": {
+    "context_id": "trs_0y6UtT4z9t3M",
+    "results": [],
+    "connections": [],
+    "guidance": [
+      "Follow these steps carefully to begin the task:"
+    ]
+  },
+  "vendor_hit_count": 0
+}

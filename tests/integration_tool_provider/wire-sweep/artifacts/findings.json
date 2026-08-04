@@ -1,0 +1,198 @@
+{
+  "total_requests": 22,
+  "total_vendor_hits": 3,
+  "accepted_boundary_hits": [
+    {
+      "route": "connections",
+      "label": "connect-github",
+      "status": 200,
+      "json_path": "$.connections[0].connect_url",
+      "redacted_context": "https://connect.[VENDOR].dev/link/lk_Qr5h9SMsQkWw",
+      "classification": "accepted_boundary"
+    },
+    {
+      "route": "connections",
+      "label": "connect-slack",
+      "status": 200,
+      "json_path": "$.connections[0].connect_url",
+      "redacted_context": "https://connect.[VENDOR].dev/link/lk_0r4R13IYMQdJ",
+      "classification": "accepted_boundary"
+    }
+  ],
+  "model_visible_defect_hits": [
+    {
+      "route": "search",
+      "label": "broad-slack",
+      "status": 200,
+      "json_path": "$.results[0].tools[0].description",
+      "redacted_context": "Find channels in a Slack workspace by any criteria - name, topic, purpose, or description. Returns channel IDs (C*/G* prefixed) required by most Slack tools \u2014 always resolve names to IDs here before passing to other tools. NOTE: This action searches channels and conversations visible to the authenticated user. Empty results may indicate: - No channels match the search query in name, topic, or purpose - The target private channel or DM is not accessible to the authenticated user because they are not a member - The connection lacks required read scopes (channels:read, groups:read, im:read, mpim:read). If empty, retry with exact_match=false or exclude_archived=false to avoid false negatives. In large workspaces, paginate using next_cursor to avoid missing matches. Check '[VENDOR]_execution_message' and 'total_channels_searched' in the response for details.",
+      "classification": "model_visible_defect"
+    }
+  ],
+  "genuinely_new_hits_not_covered_by_known_edge_6": [
+    {
+      "route": "search",
+      "label": "broad-slack",
+      "status": 200,
+      "json_path": "$.results[0].tools[0].description",
+      "redacted_context": "Find channels in a Slack workspace by any criteria - name, topic, purpose, or description. Returns channel IDs (C*/G* prefixed) required by most Slack tools \u2014 always resolve names to IDs here before passing to other tools. NOTE: This action searches channels and conversations visible to the authenticated user. Empty results may indicate: - No channels match the search query in name, topic, or purpose - The target private channel or DM is not accessible to the authenticated user because they are not a member - The connection lacks required read scopes (channels:read, groups:read, im:read, mpim:read). If empty, retry with exact_match=false or exclude_archived=false to avoid false negatives. In large workspaces, paginate using next_cursor to avoid missing matches. Check '[VENDOR]_execution_message' and 'total_channels_searched' in the response for details.",
+      "classification": "model_visible_defect"
+    }
+  ],
+  "known_edge_6_status": {
+    "upstream_502_envelope": {
+      "description": "502 UPSTREAM_ERROR envelope names the vendor and echoes raw upstream prose",
+      "reproduced": false,
+      "evidence": null
+    },
+    "plan_pitfalls_leak": {
+      "description": "plan/pitfalls arrays leak vendor strings",
+      "reproduced": false,
+      "evidence": null
+    },
+    "execute_context_id_echo": {
+      "description": "/v1/execute echoes a caller-supplied context_id verbatim instead of the real session id",
+      "reproduced": true,
+      "evidence": "sent context_id='bogus-ctx-injected-marker-12345', echoed back unchanged in response.context_id (session-resolved-by-userId semantics mean it should have been superseded)"
+    },
+    "nas_tool_overrides": {
+      "description": "NAS toolOverrides are neither persisted by NAS nor enforced by the gateway",
+      "reproduced": false,
+      "evidence": "not probed: would require mutating NAS org toolkit policy, which this read-only wire-sweep lens is not authorized to do"
+    }
+  },
+  "per_call_summary": [
+    {
+      "route": "search",
+      "label": "broad-hn",
+      "status": 200,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "search",
+      "label": "broad-slack",
+      "status": 200,
+      "vendor_hit_count": 1
+    },
+    {
+      "route": "search",
+      "label": "broad-github",
+      "status": 200,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "search",
+      "label": "broad-googlecalendar",
+      "status": 200,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "search",
+      "label": "broad-gmail",
+      "status": 200,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "search",
+      "label": "broad-notion",
+      "status": 200,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "search",
+      "label": "narrow-slug-shaped",
+      "status": 200,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "search",
+      "label": "error-empty-queries",
+      "status": 400,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "search",
+      "label": "error-too-many-queries",
+      "status": 400,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "schemas",
+      "label": "valid-hn-batch",
+      "status": 200,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "schemas",
+      "label": "error-toolkit-not-enabled",
+      "status": 403,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "schemas",
+      "label": "error-tool-not-found",
+      "status": 404,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "execute",
+      "label": "single-hn",
+      "status": 200,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "execute",
+      "label": "batch-10-hn",
+      "status": 200,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "execute",
+      "label": "error-toolkit-not-enabled",
+      "status": 403,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "execute",
+      "label": "error-tool-level-bad-arg",
+      "status": 200,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "execute",
+      "label": "context-id-echo-probe",
+      "status": 200,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "connections",
+      "label": "status-all-enabled",
+      "status": 200,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "connections",
+      "label": "connect-github",
+      "status": 200,
+      "vendor_hit_count": 1
+    },
+    {
+      "route": "connections",
+      "label": "connect-slack",
+      "status": 200,
+      "vendor_hit_count": 1
+    },
+    {
+      "route": "connections",
+      "label": "error-toolkit-not-enabled",
+      "status": 403,
+      "vendor_hit_count": 0
+    },
+    {
+      "route": "search",
+      "label": "error-bad-jwt",
+      "status": 401,
+      "vendor_hit_count": 0
+    }
+  ]
+}

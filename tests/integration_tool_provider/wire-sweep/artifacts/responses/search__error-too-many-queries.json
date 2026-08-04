@@ -1,0 +1,14 @@
+{
+  "route": "search",
+  "label": "error-too-many-queries",
+  "status": 400,
+  "elapsed_s": 0.0084,
+  "body": {
+    "error": {
+      "code": "BAD_REQUEST",
+      "message": "'queries' must be an array of 1 to 5 strings"
+    },
+    "requestId": "6b7da3a5-bceb-4100-80e8-1eecad52235e"
+  },
+  "vendor_hit_count": 0
+}

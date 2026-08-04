@@ -1,0 +1,19 @@
+{
+  "route": "schemas",
+  "label": "error-tool-not-found",
+  "status": 404,
+  "elapsed_s": 0.4967,
+  "body": {
+    "error": {
+      "code": "TOOL_NOT_FOUND",
+      "message": "One or more requested tools were not found",
+      "details": {
+        "slugs": [
+          "HACKERNEWS_TOTALLY_MADE_UP_TOOL"
+        ]
+      }
+    },
+    "requestId": "2a7b20b5-e17d-42fb-ab0c-7befe453a7cb"
+  },
+  "vendor_hit_count": 0
+}

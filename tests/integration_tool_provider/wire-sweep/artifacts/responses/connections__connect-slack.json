@@ -1,0 +1,16 @@
+{
+  "route": "connections",
+  "label": "connect-slack",
+  "status": 200,
+  "elapsed_s": 2.0137,
+  "body": {
+    "connections": [
+      {
+        "toolkit": "slack",
+        "status": "pending",
+        "connect_url": "https://connect.[VENDOR].dev/link/lk_0r4R13IYMQdJ"
+      }
+    ]
+  },
+  "vendor_hit_count": 1
+}

@@ -1,0 +1,16 @@
+{
+  "route": "connections",
+  "label": "connect-github",
+  "status": 200,
+  "elapsed_s": 1.4365,
+  "body": {
+    "connections": [
+      {
+        "toolkit": "github",
+        "status": "pending",
+        "connect_url": "https://connect.[VENDOR].dev/link/lk_Qr5h9SMsQkWw"
+      }
+    ]
+  },
+  "vendor_hit_count": 1
+}

@@ -1,0 +1,13 @@
+Use the managed external-app tool bridge, and ONLY it.
+
+List the 3 most recently updated GitHub repositories owned by my account.
+Do this through the bridge (tool_search / tool_call / the app-connections tool).
+
+Hard constraints:
+- Do NOT use the terminal tool, curl, bash, python, WebSearch, WebFetch, the gh CLI,
+  or any direct public HTTP API.
+- If you cannot complete it, say EXACTLY why in the user's terms and quote the exact
+  error text or instruction the bridge gave you, verbatim, in a fenced block.
+- Do not ask me questions; just do it.
+
+End your reply with the line: GH_RESULT <ok|blocked>

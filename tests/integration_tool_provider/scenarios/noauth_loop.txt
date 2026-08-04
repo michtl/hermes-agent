@@ -1,0 +1,17 @@
+You have a managed external-app tool bridge available. Use it, and ONLY it.
+
+Step 1. Call tool_search with a query for Hacker News front-page / top stories.
+Step 2. From the slugs tool_search returns, pick the one that fetches Hacker News
+        front-page or top stories and CALL IT (tool_call) with a small limit (5).
+Step 3. Report the REAL results: for each story, the exact title and its numeric id
+        (and score/url if the tool returned them). Do not paraphrase titles.
+
+Hard constraints:
+- Do NOT use the terminal tool, curl, bash, python, WebSearch, WebFetch, or any
+  direct public HTTP API. A direct fetch is a FAILED run, not a shortcut.
+- If tool_search returns nothing useful on the first query, retry tool_search ONCE
+  with a different phrasing (e.g. "hackernews frontpage", "get top stories").
+- Do not ask me questions; just do it.
+
+End your reply with the line: LOOP_OK <n> where <n> is the number of stories you
+actually got back from the bridge tool (0 if the call failed).

@@ -1,0 +1,205 @@
+{
+  "checks": [
+    {
+      "name": "baseline: target toolkit is enabled on NAS + DB",
+      "pass": true,
+      "evidence": "nas=true db=true"
+    },
+    {
+      "name": "baseline: gateway sees target toolkit (warm principal)",
+      "pass": true,
+      "evidence": "HTTP 200 toolkits=[\"github\",\"gmail\",\"googlecalendar\",\"hackernews\",\"notion\",\"slack\"]"
+    },
+    {
+      "name": "UI: switch renders as ON before the toggle",
+      "pass": true,
+      "evidence": "aria-label=\"Disable Notion\" present"
+    },
+    {
+      "name": "UI: disable click issued PUT enabled=false and got 200",
+      "pass": true,
+      "evidence": "HTTP 200 body={\"slug\":\"notion\",\"enabled\":false,\"enabledToolkits\":[\"hackernews\",\"github\",\"googlecalendar\",\"gmail\",\"slack\"],\"toolsOverride\":null}"
+    },
+    {
+      "name": "UI: row shows Disabled after the toggle",
+      "pass": true,
+      "evidence": "\"N Notion Productivity Disabled Soft-disable Revoke\""
+    },
+    {
+      "name": "NAS GET reflects disabled",
+      "pass": true,
+      "evidence": "enabled=[\"github\",\"gmail\",\"googlecalendar\",\"hackernews\",\"slack\"]"
+    },
+    {
+      "name": "DB row reflects disabled",
+      "pass": true,
+      "evidence": "enabledToolkits=[\"hackernews\",\"github\",\"googlecalendar\",\"gmail\",\"slack\"] toolOverrides=null"
+    },
+    {
+      "name": "UI is not lying: full reload still shows disabled (persisted, not optimistic)",
+      "pass": true,
+      "evidence": "after reload the switch reads \"Enable Notion\" (i.e. currently off)"
+    },
+    {
+      "name": "GW cold principal sees the disable (no cache entry to invalidate)",
+      "pass": true,
+      "evidence": "HTTP 200 +2093ms after T0, toolkits=[\"github\",\"gmail\",\"googlecalendar\",\"hackernews\",\"slack\"]"
+    },
+    {
+      "name": "GW cold principal is a REAL org member (non-empty policy, not fail-closed)",
+      "pass": true,
+      "evidence": "cold principal still sees 5 other toolkit(s): [\"github\",\"gmail\",\"googlecalendar\",\"hackernews\",\"slack\"]"
+    },
+    {
+      "name": "GW warm principal picks up the disable inside the 30s policy TTL",
+      "pass": true,
+      "evidence": "flipped 30.0s after the cache-seeding fetch (28.5s after T0), 19 polls"
+    },
+    {
+      "name": "UI: re-enable click issued PUT enabled=true and got 200",
+      "pass": true,
+      "evidence": "HTTP 200 body={\"slug\":\"notion\",\"enabled\":true,\"enabledToolkits\":[\"hackernews\",\"github\",\"googlecalendar\",\"gmail\",\"slack\",\"notion\"],\"toolsOverride\":null}"
+    },
+    {
+      "name": "NAS GET recovers after re-enable",
+      "pass": true,
+      "evidence": "enabled=[\"github\",\"gmail\",\"googlecalendar\",\"hackernews\",\"notion\",\"slack\"]"
+    },
+    {
+      "name": "DB row recovers after re-enable",
+      "pass": true,
+      "evidence": "enabledToolkits=[\"hackernews\",\"github\",\"googlecalendar\",\"gmail\",\"slack\",\"notion\"]"
+    },
+    {
+      "name": "UI is not lying: full reload after re-enable shows enabled",
+      "pass": true,
+      "evidence": "switch reads \"Disable Notion\" after reload"
+    },
+    {
+      "name": "GW recovers the toolkit after re-enable, inside the TTL",
+      "pass": true,
+      "evidence": "recovered 29.4s after the cache-seeding fetch (29.3s after T1), 20 polls"
+    },
+    {
+      "name": "no console errors during the round-trip",
+      "pass": true,
+      "evidence": "none"
+    },
+    {
+      "name": "restore: enabled toolkit SET matches the baseline",
+      "pass": true,
+      "evidence": "[\"hackernews\",\"github\",\"googlecalendar\",\"gmail\",\"slack\",\"notion\"]"
+    },
+    {
+      "name": "restore: toolOverrides matches the baseline",
+      "pass": true,
+      "evidence": "baseline=null final=null"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "low",
+      "summary": "A UI disable+re-enter round-trip silently REORDERS OrgToolkitPolicy.enabledToolkits",
+      "evidence": "baseline=[\"hackernews\",\"github\",\"googlecalendar\",\"gmail\",\"notion\",\"slack\"] after=[\"hackernews\",\"github\",\"googlecalendar\",\"gmail\",\"slack\",\"notion\"] — setToolkitEnabled() rebuilds the array as [...existing, slug], so the re-enabled slug moves to the tail. The set is preserved; only the stored order changes."
+    }
+  ],
+  "timings": {
+    "T0_disable_put_ms_since_start": 2486,
+    "cold_disable_observed_ms_after_T0": 2093,
+    "warm_disable_ms_after_cache_seed": 30028,
+    "warm_disable_ms_after_T0": 28535,
+    "warm_polls": 19,
+    "warm_recovery_ms_after_cache_seed": 29392,
+    "warm_recovery_ms_after_T1": 29279
+  },
+  "states": {
+    "baseline": {
+      "nas": [
+        "github",
+        "gmail",
+        "googlecalendar",
+        "hackernews",
+        "notion",
+        "slack"
+      ],
+      "db": {
+        "orgId": "nas_organisation:cfafba9e-77f3-4f72-97e3-dc491fc90c19",
+        "enabledToolkits": [
+          "hackernews",
+          "github",
+          "googlecalendar",
+          "gmail",
+          "notion",
+          "slack"
+        ],
+        "toolOverrides": null
+      }
+    },
+    "afterDisable": {
+      "nas": [
+        "github",
+        "gmail",
+        "googlecalendar",
+        "hackernews",
+        "slack"
+      ],
+      "db": {
+        "orgId": "nas_organisation:cfafba9e-77f3-4f72-97e3-dc491fc90c19",
+        "enabledToolkits": [
+          "hackernews",
+          "github",
+          "googlecalendar",
+          "gmail",
+          "slack"
+        ],
+        "toolOverrides": null
+      }
+    },
+    "afterReenable": {
+      "nas": [
+        "github",
+        "gmail",
+        "googlecalendar",
+        "hackernews",
+        "notion",
+        "slack"
+      ],
+      "db": {
+        "orgId": "nas_organisation:cfafba9e-77f3-4f72-97e3-dc491fc90c19",
+        "enabledToolkits": [
+          "hackernews",
+          "github",
+          "googlecalendar",
+          "gmail",
+          "slack",
+          "notion"
+        ],
+        "toolOverrides": null
+      }
+    },
+    "final": {
+      "orgId": "nas_organisation:cfafba9e-77f3-4f72-97e3-dc491fc90c19",
+      "enabledToolkits": [
+        "hackernews",
+        "github",
+        "googlecalendar",
+        "gmail",
+        "slack",
+        "notion"
+      ],
+      "toolOverrides": null
+    }
+  },
+  "putCalls": [
+    {
+      "url": "http://127.0.0.1:8092/api/capabilities/toolkits/notion",
+      "status": 200,
+      "at": 1785872977943
+    },
+    {
+      "url": "http://127.0.0.1:8092/api/capabilities/toolkits/notion",
+      "status": 200,
+      "at": 1785873007299
+    }
+  ]
+}

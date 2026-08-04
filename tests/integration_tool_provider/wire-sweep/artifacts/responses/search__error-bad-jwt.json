@@ -1,0 +1,14 @@
+{
+  "route": "search",
+  "label": "error-bad-jwt",
+  "status": 401,
+  "elapsed_s": 0.0101,
+  "body": {
+    "error": {
+      "code": "AUTH_ERROR",
+      "message": "Unauthorized"
+    },
+    "requestId": "452fb0dd-c858-483b-9d30-190c5f4f5bb9"
+  },
+  "vendor_hit_count": 0
+}

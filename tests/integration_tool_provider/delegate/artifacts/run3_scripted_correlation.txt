@@ -1,0 +1,46 @@
+run mark: 2026-08-04T19:46:03Z
+launching: /home/daimon/github/hermes-agent/.worktrees/composio-bridge/.venv/bin/python -m hermes_cli.main -z <prompt>  (cwd=/tmp/hh-deleg/deleg2/workdir)
+exit=0 elapsed=40.4s
+transcript: /home/daimon/github/hermes-agent/.worktrees/composio-bridge/tests/integration_tool_provider/harness/transcripts/deleg2-delegate_child-20260804T194644Z.txt
+redaction self-check: CLEAN
+== sessions in /tmp/hh-deleg/deleg2/hermes-home/state.db ==
+  20260804_194323_f234f2  parent=None  title='None'
+  20260804_194333_c1b539  parent=20260804_194323_f234f2  title='None'
+  20260804_194605_88299d  parent=None  title='None'
+  20260804_194614_0d0570  parent=20260804_194605_88299d  title='None'
+
+== bridge-bearing messages, by session ==
+  sess=20260804_194323_f234f2 role=user ctx=[] ['tool_search', 'tool_call']
+  sess=20260804_194323_f234f2 role=assistant ctx=[] ['tool_search', 'tool_call']
+  sess=20260804_194333_c1b539 role=user ctx=[] ['tool_search', 'tool_call']
+  sess=20260804_194333_c1b539 role=assistant ctx=[] ['tool_call']
+  sess=20260804_194333_c1b539 role=tool ctx=[] ['tool_call']
+  sess=20260804_194333_c1b539 role=assistant ctx=[] ['tool_call']
+  sess=20260804_194323_f234f2 role=tool ctx=[] ['tool_call']
+  sess=20260804_194323_f234f2 role=assistant ctx=[] ['tool_call']
+  sess=20260804_194605_88299d role=user ctx=[] ['tool_search', 'tool_call']
+  sess=20260804_194605_88299d role=assistant ctx=[] ['tool_search', 'tool_call']
+  sess=20260804_194614_0d0570 role=user ctx=[] ['tool_search', 'tool_call']
+  sess=20260804_194614_0d0570 role=assistant ctx=[] ['tool_call']
+  sess=20260804_194614_0d0570 role=tool ctx=[] ['tool_call']
+  sess=20260804_194614_0d0570 role=assistant ctx=[] ['tool_call']
+  sess=20260804_194605_88299d role=tool ctx=[] ['tool_call']
+  sess=20260804_194605_88299d role=assistant ctx=[] ['tool_call']
+
+== context_id per session ==
+  20260804_194323_f234f2 -> []
+  20260804_194333_c1b539 -> []
+  20260804_194605_88299d -> []
+  20260804_194614_0d0570 -> []
+
+VERDICT: distinct context_ids across all sessions = []
+
+== gateway-side arrivals ==
+  2026-08-04T19:46:03.499Z INFO  Composio connections request {"requestId":"297a53cd-67ed-41ef-af5e-d6e587a6d78b","source":"composio","method":"POST","pathname":"/v1/connections","operation":"app_manage_connections","principalId":"nas_user:f7141b46-b044-41b0-aa13-a36a66f64f26","action":"status","toolkitCount":6,"resolvedFromEmptyRequest":true}
+  2026-08-04T19:46:03.959Z INFO  Composio connections response {"requestId":"297a53cd-67ed-41ef-af5e-d6e587a6d78b","source":"composio","method":"POST","pathname":"/v1/connections","operation":"app_manage_connections","providerMs":459.06,"connectionCount":6}
+  2026-08-04T19:46:05.085Z INFO  Composio connections request {"requestId":"8fde4326-f83c-437e-877a-4fe560ec55f3","source":"composio","method":"POST","pathname":"/v1/connections","operation":"app_manage_connections","principalId":"nas_user:f7141b46-b044-41b0-aa13-a36a66f64f26","action":"status","toolkitCount":6,"resolvedFromEmptyRequest":true}
+  2026-08-04T19:46:05.442Z INFO  Composio connections response {"requestId":"8fde4326-f83c-437e-877a-4fe560ec55f3","source":"composio","method":"POST","pathname":"/v1/connections","operation":"app_manage_connections","providerMs":357.44,"connectionCount":6}
+  2026-08-04T19:46:13.966Z INFO  Composio connections request {"requestId":"f36699a9-35db-430e-8ee4-45e915fe2f36","source":"composio","method":"POST","pathname":"/v1/connections","operation":"app_manage_connections","principalId":"nas_user:f7141b46-b044-41b0-aa13-a36a66f64f26","action":"status","toolkitCount":6,"resolvedFromEmptyRequest":true}
+  2026-08-04T19:46:14.390Z INFO  Composio connections response {"requestId":"f36699a9-35db-430e-8ee4-45e915fe2f36","source":"composio","method":"POST","pathname":"/v1/connections","operation":"app_manage_connections","providerMs":424.39,"connectionCount":6}
+  2026-08-04T19:46:22.228Z INFO  Composio billable execute request {"requestId":"545a7ed5-4cb1-41ab-a2e3-0f988db2652e","source":"composio","method":"POST","pathname":"/v1/execute","operation":"app_execute_tools","principalId":"nas_user:f7141b46-b044-41b0-aa13-a36a66f64f26","toolCount":1,"toolkitCount":1,"toolkits":["hackernews"]}
+  2026-08-04T19:46:23.389Z INFO  Composio billable execute response {"requestId":"545a7ed5-4cb1-41ab-a2e3-0f988db2652e","source":"composio","method":"POST","pathname":"/v1/execute","operation":"app_execute_tools","providerMs":1099.68,"toolkitCount":1,"resultCount":1}

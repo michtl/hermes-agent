@@ -1,0 +1,295 @@
+{
+  "route": "search",
+  "label": "broad-slack",
+  "status": 200,
+  "elapsed_s": 3.4016,
+  "body": {
+    "context_id": "trs_0y6UtT4z9t3M",
+    "results": [
+      {
+        "use_case": "send a slack message to a channel",
+        "tools": [
+          {
+            "slug": "SLACK_FIND_CHANNELS",
+            "toolkit": "slack",
+            "description": "Find channels in a Slack workspace by any criteria - name, topic, purpose, or description. Returns channel IDs (C*/G* prefixed) required by most Slack tools \u2014 always resolve names to IDs here before passing to other tools. NOTE: This action searches channels and conversations visible to the authenticated user. Empty results may indicate: - No channels match the search query in name, topic, or purpose - The target private channel or DM is not accessible to the authenticated user because they are not a member - The connection lacks required read scopes (channels:read, groups:read, im:read, mpim:read). If empty, retry with exact_match=false or exclude_archived=false to avoid false negatives. In large workspaces, paginate using next_cursor to avoid missing matches. Check '[VENDOR]_execution_message' and 'total_channels_searched' in the response for details.",
+            "connected": false,
+            "input_schema": {
+              "type": "object",
+              "required": [
+                "query"
+              ],
+              "properties": {
+                "limit": {
+                  "type": "integer",
+                  "default": 50,
+                  "examples": [
+                    10,
+                    50,
+                    100,
+                    200,
+                    500
+                  ],
+                  "description": "Maximum number of channels to return (1 to 999). Defaults to 50. Slack recommends no more than 200 results at a time for optimal performance."
+                },
+                "query": {
+                  "type": "string",
+                  "examples": [
+                    "general",
+                    "#general",
+                    "marketing",
+                    "dev",
+                    "announcements",
+                    "project"
+                  ],
+                  "description": "Search query to find channels. Searches across channel name, topic, purpose, and description (case-insensitive partial matching). Leading '#' prefix is automatically stripped."
+                },
+                "types": {
+                  "type": "string",
+                  "default": "public_channel,private_channel",
+                  "examples": [
+                    "public_channel",
+                    "private_channel",
+                    "public_channel,private_channel"
+                  ],
+                  "description": "Comma-separated list of channel types to include: `public_channel`, `private_channel`, `mpim` (multi-person direct message), `im` (direct message). Defaults to public and private channels."
+                },
+                "team_id": {
+                  "type": "string",
+                  "examples": [
+                    "T1234567890",
+                    "T9876543210"
+                  ],
+                  "description": "ID of the Slack workspace (team) to operate on, e.g. T0123456789. Use only with org-level Enterprise Grid tokens when you need to target a specific workspace; omit for single-workspace tokens."
+                },
+                "exact_match": {
+                  "type": "boolean",
+                  "default": false,
+                  "examples": [
+                    true,
+                    false
+                  ],
+                  "description": "When true, only return channels whose name exactly matches the query (case-insensitive). Also matches against previous channel names and the 'general' flag. When false, returns partial matches across name, topic, and purpose. Defaults to false."
+                },
+                "member_only": {
+                  "type": "boolean",
+                  "default": false,
+                  "examples": [
+                    true,
+                    false
+                  ],
+                  "description": "Only return channels the user is a member of. Defaults to false."
+                },
+                "exclude_archived": {
+                  "type": "boolean",
+                  "default": true,
+                  "examples": [
+                    true,
+                    false
+                  ],
+                  "description": "Exclude archived channels from search results. Defaults to true."
+                }
+              }
+            }
+          },
+          {
+            "slug": "SLACK_SEND_MESSAGE",
+            "toolkit": "slack",
+            "description": "Posts a message to a Slack channel, DM, or private group. Provide exactly one visible content mode: `markdown_text` for normal Markdown content, or `blocks` for raw Slack Block Kit layouts. Use `fallback_text` only with `blocks`; it maps to Slack's top-level `text` fallback. Fails with `not_in_channel`, `channel_not_found`, or `channel_is_archived` if the bot lacks access. Rate-limited at ~1 req/sec (HTTP 429, honor `Retry-After`). Not idempotent \u2014 duplicate calls post duplicate messages.",
+            "connected": false,
+            "input_schema": {
+              "type": "object",
+              "required": [
+                "channel"
+              ],
+              "properties": {
+                "blocks": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "examples": [
+                    [
+                      {
+                        "text": "# Deploy approval\n\nApprove or reject production.",
+                        "type": "markdown"
+                      },
+                      {
+                        "type": "actions",
+                        "elements": [
+                          {
+                            "text": {
+                              "text": "Approve",
+                              "type": "plain_text"
+                            },
+                            "type": "button",
+                            "value": "approve_prod",
+                            "action_id": "approve_prod"
+                          }
+                        ]
+                      }
+                    ]
+                  ],
+                  "description": "Use this instead of `markdown_text` only when you need Slack Block Kit capabilities that Markdown cannot express: buttons, approval/reject actions, select menus, checkboxes, radio buttons, date/time pickers, overflow menus, interactive workflow payloads, section accessories, image/video blocks, context rows, two-column fields, multiple action buttons in one row, or rich card-like layouts. Provide raw Slack Block Kit JSON as an array. For normal prose generated by an LLM inside a blocks payload, prefer a Slack markdown block: {'type': 'markdown', 'text': '# Heading\\n\\nBody text'}. Do not use this together with `markdown_text`. If these blocks are the visible content, provide `fallback_text` when notification/accessibility fallback matters."
+                },
+                "channel": {
+                  "type": "string",
+                  "examples": [
+                    "C1234567890",
+                    "general"
+                  ],
+                  "description": "ID or name of the channel, private group, or IM channel to send the message to. Can be specified as either 'channel' or 'channel_id'. Do NOT include the '#' prefix (e.g., use 'general' not '#general') - any leading '#' will be automatically stripped. For DMs, use the channel ID returned by SLACK_OPEN_DM (starts with 'D'); usernames, emails, and user IDs are not valid DM targets. IMPORTANT: org-wide (Enterprise Grid) tokens cannot resolve channel names \u2014 Slack returns `team_not_found`. Pass the channel ID (e.g., 'C0ABC12345') instead; use SLACK_LIST_ALL_CHANNELS to find IDs."
+                },
+                "thread_ts": {
+                  "type": "string",
+                  "examples": [
+                    "1618033790.001500"
+                  ],
+                  "description": "Timestamp (`ts`) of an existing message to make this a threaded reply. Use `ts` of the parent message, not another reply. Example: '1476746824.000004'."
+                },
+                "unfurl_links": {
+                  "type": "boolean",
+                  "description": "Enable unfurling of text-based URLs. Defaults `false` for bots, `true` if `as_user` is `true`."
+                },
+                "unfurl_media": {
+                  "type": "boolean",
+                  "description": "Enable media previews (images, videos) from URLs. Set to `true` (default) to show media previews, `false` to hide them."
+                },
+                "fallback_text": {
+                  "type": "string",
+                  "examples": [
+                    "Deploy approval requested for production."
+                  ],
+                  "description": "Optional only when using `blocks`. Maps to Slack's top-level `text` field for notifications, accessibility, search previews, and clients that cannot render blocks. This should be a short plain-text summary of the block content, not another visible message body. Omit it if you want Slack to infer fallback text from supported blocks."
+                },
+                "markdown_text": {
+                  "type": "string",
+                  "examples": [
+                    "# Status Update\n\nSystem is **running smoothly** with *excellent* performance.\n\n```bash\nkubectl get pods\n```\n\n> All services operational \u2705",
+                    "| Metric | Status |\n|---|---|\n| p95 latency | improved |\n| error rate | stable |",
+                    "a\n\u00a0\n\u00a0\n\u00a0\nb"
+                  ],
+                  "description": "Use this for normal LLM-written message content. Pass standard Markdown exactly as written; this tool sends it to Slack's native `markdown_text` argument without converting it to blocks. Do not use this together with `blocks`. Supports Slack's native markdown handling for headings, bold, italic, links, lists, code, quotes, dividers, tables, and task lists. Slack collapses literal empty Markdown lines; to force visible blank spacer rows, put a non-breaking space on each spacer line, e.g. `a\\n\\u00a0\\n\\u00a0\\n\\u00a0\\nb`. For Slack mentions, use explicit entity syntax such as <@USER_ID>, <#CHANNEL_ID>, or <!subteam^GROUP_ID>; do not rely on @name or #name auto-linking. Use `blocks` instead when you need buttons, selects, checkboxes, image blocks, context rows, fields, accessories, or other interactive/layout controls."
+                },
+                "reply_broadcast": {
+                  "type": "boolean",
+                  "description": "If `true` for a threaded reply, also posts to main channel. Defaults to `false`."
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          {
+            "slug": "SLACK_LIST_ALL_CHANNELS",
+            "toolkit": "slack",
+            "description": "Lists conversations available to the user with various filters and search options. Always use resolved `channel_id` (not display names) for downstream operations, as names may be non-unique. The `created` field in results is a Unix epoch timestamp (UTC). Pagination across large workspaces may return HTTP 429 with a `Retry-After` header; honor the delay and resume from the last successful cursor.",
+            "connected": false,
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "limit": {
+                  "type": "integer",
+                  "default": 1,
+                  "examples": [
+                    100,
+                    500,
+                    1000
+                  ],
+                  "description": "Maximum number of channels to return per page (1 to 1000). Fewer channels may be returned than requested. This schema defaults to 1 if omitted."
+                },
+                "types": {
+                  "type": "string",
+                  "examples": [
+                    "public_channel,private_channel",
+                    "im,mpim"
+                  ],
+                  "description": "Comma-separated list of conversation types to include: `public_channel` (regular #channels everyone can join), `private_channel` (invite-only channels), `im` (1-on-1 direct messages), `mpim` (group direct messages with 3+ people). Defaults to `public_channel` if omitted. Private channels, IMs, and MPIMs only appear if the authenticated user/bot is a member and the token has the required scopes; absence from results reflects access limits, not non-existence."
+                },
+                "cursor": {
+                  "type": "string",
+                  "examples": [
+                    "dXNlcjpVMDYxTkZUVDI=",
+                    "bmV4dF90czoxNTEyMDg1ODYxMDAwNTQ5"
+                  ],
+                  "description": "Pagination cursor (from a previous response's `next_cursor`) for the next page of results. Omit for the first page. Loop on `response_metadata.next_cursor` until it is empty to retrieve all channels; stopping early silently omits results."
+                },
+                "team_id": {
+                  "type": "string",
+                  "examples": [
+                    "T1234567890"
+                  ],
+                  "description": "ID of the Slack workspace (team) to operate on, e.g. T0123456789. Use only with org-level Enterprise Grid tokens when you need to target a specific workspace; omit for single-workspace tokens."
+                },
+                "exclude_archived": {
+                  "type": "boolean",
+                  "examples": [
+                    true,
+                    false
+                  ],
+                  "description": "Excludes archived channels if true. The API defaults to false (archived channels are included)."
+                }
+              }
+            }
+          },
+          {
+            "slug": "SLACK_FIND_USERS",
+            "toolkit": "slack",
+            "description": "Find users in a Slack workspace by any criteria - email, name, display name, or other text. Includes...",
+            "connected": false
+          },
+          {
+            "slug": "SLACK_OPEN_DM",
+            "toolkit": "slack",
+            "description": "Opens or resumes a Slack direct message (DM) or multi-person direct message (MPIM) by providing eith...",
+            "connected": false
+          },
+          {
+            "slug": "SLACK_JOIN_AN_EXISTING_CONVERSATION",
+            "toolkit": "slack",
+            "description": "Joins an existing Slack conversation (public channel, private channel, or multi-person direct messag...",
+            "connected": false
+          },
+          {
+            "slug": "SLACK_UPDATES_A_SLACK_MESSAGE",
+            "toolkit": "slack",
+            "description": "Updates a Slack message by timestamp. Provide exactly one visible content mode: `markdown_text` for ...",
+            "connected": false
+          },
+          {
+            "slug": "SLACK_SCHEDULE_MESSAGE",
+            "toolkit": "slack",
+            "description": "Schedules a message to a Slack channel, DM, or private group for a future time (`post_at`), requirin...",
+            "connected": false
+          }
+        ],
+        "plan": [
+          "[Required (if only a destination label is known)] [Prerequisite]: Resolve the conversation identifier using SLACK_FIND_CHANNELS; if empty/ambiguous, enumerate with SLACK_LIST_ALL_CHANNELS and paginate via response.data.response_metadata.next_cursor until a deterministic match.",
+          "[Optional (if sending to a person rather than a channel)] [Prerequisite]: Resolve the recipient using SLACK_FIND_USERS, then open/reuse the direct conversation using SLACK_OPEN_DM (use the returned conversation identifier).",
+          "[Required (for public/irreversible writes)] [Prerequisite]: Confirm the final destination (channel vs direct conversation) and finalized message content before using SLACK_SEND_MESSAGE.",
+          "[Required] [Step]: Send using SLACK_SEND_MESSAGE with the resolved conversation identifier and at least one content field (text/markdown_text/blocks/attachments); include thread_ts for replies; store returned channel and canonical timestamp for follow-ups.",
+          "[Optional (if SLACK_SEND_MESSAGE fails due to membership and joining is permitted)] [Fallback]: Join using SLACK_JOIN_AN_EXISTING_CONVERSATION, then retry SLACK_SEND_MESSAGE once to reduce duplicate-post risk.",
+          "[Optional (if corrections are needed)] [Next Step]: Edit the posted message using SLACK_UPDATES_A_SLACK_MESSAGE (requires stored channel and canonical timestamp).",
+          "[Optional (if posting later is desired)] [Next Step]: Schedule delivery using SLACK_SCHEDULE_MESSAGE after destination and content are finalized."
+        ],
+        "pitfalls": [
+          "[SLACK_FIND_CHANNELS] search_query is required; ok=true may still return an empty data.channels set when the destination is not visible to the token (access/scope/membership).",
+          "[SLACK_LIST_ALL_CHANNELS] Pagination uses response.data.response_metadata.next_cursor; omitting cursor repeats the first page\u2014de-duplicate and ignore archived entries client-side.",
+          "[SLACK_SEND_MESSAGE] Requires a conversation identifier (not a display label) and at least one content field; common errors include channel_not_found, not_in_channel, is_archived, no_text.",
+          "[SLACK_SEND_MESSAGE] Payload constraints can fail writes (e.g., invalid_blocks with max 50 blocks, msg_blocks_too_long); long text may need splitting (around 4000 chars).",
+          "[SLACK_OPEN_DM] Responses may include warning fields or reuse indicators while still succeeding; treat ok=true plus a returned conversation identifier as success."
+        ]
+      }
+    ],
+    "connections": [
+      {
+        "toolkit": "slack",
+        "connected": false
+      }
+    ],
+    "guidance": [
+      "2) Extract validated plan steps returned above, acknowledge each step, then execute sequentially updating current_step parameter. Check pitfalls during execution."
+    ]
+  },
+  "vendor_hit_count": 1
+}

@@ -1,0 +1,162 @@
+{
+  "route": "schemas",
+  "label": "valid-hn-batch",
+  "status": 200,
+  "elapsed_s": 0.4416,
+  "body": {
+    "schemas": [
+      {
+        "slug": "HACKERNEWS_GET_ASK_STORIES",
+        "toolkit": "hackernews",
+        "description": "Get up to 200 latest Ask HN story IDs from Hacker News. Returns an array of item IDs for Ask HN posts in ranked order.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "print": {
+              "enum": [
+                "pretty"
+              ],
+              "type": "string",
+              "description": "Output format for JSON response."
+            }
+          }
+        }
+      },
+      {
+        "slug": "HACKERNEWS_GET_BEST_STORIES",
+        "toolkit": "hackernews",
+        "description": "Get up to 500 best story IDs from HackerNews ranked by score. Returns story IDs only. Use the returned IDs with get_item_with_id action to fetch full story details.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "print": {
+              "enum": [
+                "pretty"
+              ],
+              "type": "string",
+              "description": "Output formatting options for the API response."
+            }
+          }
+        }
+      },
+      {
+        "slug": "HACKERNEWS_GET_ITEM",
+        "toolkit": "hackernews",
+        "description": "Tool to get a Hacker News item by its unique ID from the Firebase API. Use when you need to retrieve details about a specific story, comment, job, poll, or pollopt.",
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "integer",
+              "examples": [
+                8863,
+                126809,
+                192327
+              ],
+              "description": "The unique integer ID of the item (story, comment, job, poll, or pollopt) to retrieve from Hacker News.",
+              "exclusiveMinimum": 0
+            }
+          }
+        }
+      },
+      {
+        "slug": "HACKERNEWS_GET_JOB_STORIES",
+        "toolkit": "hackernews",
+        "description": "Get up to 200 latest job story IDs from Hacker News. Returns an array of item IDs for job postings that can be used to fetch full job details.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "print_format": {
+              "type": "string",
+              "pattern": "^pretty$",
+              "description": "Set to 'pretty' for formatted JSON output. If not specified, returns compact JSON."
+            }
+          }
+        }
+      },
+      {
+        "slug": "HACKERNEWS_GET_MAX_ITEM_ID",
+        "toolkit": "hackernews",
+        "description": "Tool to get the current largest item ID from Hacker News. Use when you need to discover the most recent items or iterate through all items in the system by walking backward from this ID.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "print": {
+              "type": "string",
+              "pattern": "^pretty$",
+              "description": "Set to 'pretty' for formatted JSON output. Leave unset for compact JSON."
+            }
+          }
+        }
+      },
+      {
+        "slug": "HACKERNEWS_GET_NEW_STORIES",
+        "toolkit": "hackernews",
+        "description": "Get up to 500 newest story IDs from Hacker News. Returns an array of item IDs sorted by recency (most recent first). Use these IDs with the Get Item action to retrieve full story details.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "print_format": {
+              "type": "string",
+              "pattern": "^pretty$",
+              "description": "Set to 'pretty' for formatted JSON output. Leave empty for compact JSON."
+            }
+          }
+        }
+      },
+      {
+        "slug": "HACKERNEWS_GET_SHOW_STORIES",
+        "toolkit": "hackernews",
+        "description": "Tool to retrieve up to 200 latest Show HN story IDs from Hacker News. Use when you need to find recent Show HN posts where people share their projects, products, or creations.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "print_format": {
+              "type": "string",
+              "pattern": "^pretty$",
+              "description": "Set to 'pretty' for formatted JSON output. Leave empty for compact JSON."
+            }
+          }
+        }
+      },
+      {
+        "slug": "HACKERNEWS_GET_TOP_STORIES",
+        "toolkit": "hackernews",
+        "description": "Get up to 500 top story IDs from HackerNews including jobs. Returns story IDs sorted by front page position. Use the returned IDs with get_item_with_id action to fetch full story details.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "print": {
+              "enum": [
+                "pretty"
+              ],
+              "type": "string",
+              "description": "Output formatting options for the API response."
+            }
+          }
+        }
+      },
+      {
+        "slug": "HACKERNEWS_GET_USER",
+        "toolkit": "hackernews",
+        "description": "Retrieve a Hacker News user's public profile by their username. Returns the user's username, karma score, and optional bio/about text. Use this to look up information about HN community members.",
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "username"
+          ],
+          "properties": {
+            "username": {
+              "type": "string",
+              "description": "The case-sensitive username of the Hacker News user to retrieve (e.g., 'pg', 'dang')."
+            }
+          }
+        }
+      }
+    ]
+  },
+  "vendor_hit_count": 0
+}

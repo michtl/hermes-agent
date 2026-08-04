@@ -1,0 +1,18 @@
+Use the managed external-app tool bridge, and ONLY it.
+
+Call the tool named HACKERNEWS_GET_LATEST_POSTS with arguments {"size": 5, "page": 0}.
+That is a bridge tool slug — invoke it through the bridge's tool_call, not through a shell.
+
+Then report, verbatim from the tool's response, for each post:
+  - the exact title
+  - the numeric objectID / story id
+  - the points/score if present
+Do not paraphrase or invent titles. If the tool errors, quote the error text exactly.
+
+Hard constraints:
+- Do NOT use the terminal tool, curl, bash, python, WebSearch, WebFetch, or any direct
+  public HTTP API. A direct fetch is a FAILED run.
+- Do not ask me questions; just do it.
+
+End your reply with the line: EXEC_OK <n> where <n> is the number of posts the bridge tool
+returned (0 if it failed).

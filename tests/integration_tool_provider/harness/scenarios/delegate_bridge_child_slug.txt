@@ -1,0 +1,19 @@
+You are the PARENT agent. Do NOT do this work yourself.
+
+Call the delegate_task tool exactly once to spawn ONE child agent, and give the
+child this instruction verbatim:
+
+  "Call the tool named tool_call with these exact arguments:
+     name = HACKERNEWS_GET_LATEST_POSTS
+     arguments = {\"size\": 5}
+   That is a managed external-app tool reached through the tool bridge. Do NOT
+   call tool_search first — go straight to tool_call. You MUST NOT use the
+   terminal tool, curl, bash, python, WebSearch, or any public HTTP API: a
+   direct fetch is a FAILED task, not a shortcut. Report the REAL post titles
+   the tool returned, then finish with the line:
+     CHILD_BRIDGE_OK <n>
+   where <n> is the number of real post titles you got back from the tool."
+
+Do not call tool_search, tool_call, or terminal yourself. Wait for the child,
+then relay the child's post titles verbatim and end your own reply with the
+line: PARENT_RELAY_OK

@@ -1,0 +1,309 @@
+{
+  "route": "search",
+  "label": "broad-github",
+  "status": 200,
+  "elapsed_s": 4.4926,
+  "body": {
+    "context_id": "trs_0y6UtT4z9t3M",
+    "results": [
+      {
+        "use_case": "list my github repository issues",
+        "tools": [
+          {
+            "slug": "GITHUB_LIST_REPOSITORY_ISSUES",
+            "toolkit": "github",
+            "description": "Lists issues (including pull requests) from a GitHub repository. Requires BOTH 'owner' AND 'repo' parameters (e.g., owner='octocat', repo='Hello-World' for github.com/octocat/Hello-World).",
+            "connected": false,
+            "input_schema": {
+              "type": "object",
+              "required": [
+                "owner",
+                "repo"
+              ],
+              "properties": {
+                "page": {
+                  "type": "integer",
+                  "default": 1,
+                  "examples": [
+                    "1",
+                    "5"
+                  ],
+                  "description": "Page number for the set of results. Refer to GitHub's REST API documentation for pagination details."
+                },
+                "repo": {
+                  "type": "string",
+                  "examples": [
+                    "Hello-World",
+                    "vscode",
+                    "react"
+                  ],
+                  "description": "REQUIRED. The name of the repository (without .git extension). For 'octocat/Hello-World', repo is 'Hello-World'. Not case-sensitive. Must be provided together with 'owner'."
+                },
+                "sort": {
+                  "enum": [
+                    "created",
+                    "updated",
+                    "comments"
+                  ],
+                  "type": "string",
+                  "default": "created",
+                  "examples": [
+                    "created",
+                    "updated",
+                    "comments"
+                  ],
+                  "description": "The field to sort the results by."
+                },
+                "type": {
+                  "type": "string",
+                  "examples": [
+                    "bug",
+                    "feature",
+                    "*",
+                    "none"
+                  ],
+                  "description": "Filter issues by type name. Use '*' for issues with any type, 'none' for issues without a type, or specify a type name."
+                },
+                "owner": {
+                  "type": "string",
+                  "examples": [
+                    "octocat",
+                    "microsoft",
+                    "facebook"
+                  ],
+                  "description": "REQUIRED. The GitHub account owner (user or organization) of the repository. For 'octocat/Hello-World', owner is 'octocat'. Not case-sensitive. Must be provided together with 'repo'."
+                },
+                "since": {
+                  "type": "string",
+                  "examples": [
+                    "2023-01-15T10:00:00Z",
+                    "2024-03-10T00:00:00+05:30"
+                  ],
+                  "description": "Filters issues to include only those updated at or after the specified time. This should be a timestamp in ISO 8601 format (e.g., `YYYY-MM-DDTHH:MM:SSZ`)."
+                },
+                "state": {
+                  "enum": [
+                    "open",
+                    "closed",
+                    "all"
+                  ],
+                  "type": "string",
+                  "default": "open",
+                  "examples": [
+                    "open",
+                    "closed",
+                    "all"
+                  ],
+                  "description": "Filters issues based on their state."
+                },
+                "labels": {
+                  "type": "string",
+                  "examples": [
+                    "bug,ui,@high",
+                    "enhancement",
+                    "help wanted,good first issue"
+                  ],
+                  "description": "A comma-separated list of label names to filter issues by. Example: 'bug,ui,@high'."
+                },
+                "creator": {
+                  "type": "string",
+                  "examples": [
+                    "octocat"
+                  ],
+                  "description": "Filter issues by the username of the user who created the issue."
+                },
+                "assignee": {
+                  "type": "string",
+                  "examples": [
+                    "codertocat",
+                    "none",
+                    "*"
+                  ],
+                  "description": "Filter issues by assignee's username. Use 'none' for issues with no assignee, or '*' for issues assigned to any user."
+                },
+                "per_page": {
+                  "type": "integer",
+                  "default": 30,
+                  "examples": [
+                    "30",
+                    "100"
+                  ],
+                  "description": "Number of results per page (max 100). Default is 30, which matches GitHub's API default. Refer to GitHub's REST API documentation for pagination details."
+                },
+                "direction": {
+                  "enum": [
+                    "asc",
+                    "desc"
+                  ],
+                  "type": "string",
+                  "default": "desc",
+                  "examples": [
+                    "asc",
+                    "desc"
+                  ],
+                  "description": "The direction of the sort."
+                },
+                "mentioned": {
+                  "type": "string",
+                  "examples": [
+                    "octodocs",
+                    "hubot"
+                  ],
+                  "description": "Filter issues by a user mentioned in the issue's description or comments. Provide the username."
+                },
+                "milestone": {
+                  "type": "string",
+                  "examples": [
+                    "1",
+                    "*",
+                    "none"
+                  ],
+                  "description": "Filter issues by milestone. Provide the milestone `number` as a string, '*' for issues with any milestone, or 'none' for issues without a milestone."
+                }
+              }
+            }
+          },
+          {
+            "slug": "GITHUB_GET_AN_ISSUE",
+            "toolkit": "github",
+            "description": "Retrieves detailed information about a specific issue in a repository using the owner, repository name, and issue number.",
+            "connected": false,
+            "input_schema": {
+              "type": "object",
+              "required": [
+                "owner",
+                "repo",
+                "issue_number"
+              ],
+              "properties": {
+                "repo": {
+                  "type": "string",
+                  "examples": [
+                    "Hello-World"
+                  ],
+                  "description": "Name of the repository (without `.git` extension). Not case-sensitive."
+                },
+                "owner": {
+                  "type": "string",
+                  "examples": [
+                    "octocat"
+                  ],
+                  "description": "Username of the account owning the repository. Not case-sensitive."
+                },
+                "issue_number": {
+                  "type": "integer",
+                  "examples": [
+                    1347
+                  ],
+                  "description": "The identifying number of the issue."
+                }
+              }
+            }
+          },
+          {
+            "slug": "GITHUB_LIST_ISSUE_COMMENTS",
+            "toolkit": "github",
+            "description": "Lists comments for a specified issue in a GitHub repository.",
+            "connected": false,
+            "input_schema": {
+              "type": "object",
+              "required": [
+                "owner",
+                "repo",
+                "issue_number"
+              ],
+              "properties": {
+                "page": {
+                  "type": "integer",
+                  "default": 1,
+                  "examples": [
+                    "1",
+                    "2",
+                    "5"
+                  ],
+                  "description": "Page number of the results to retrieve."
+                },
+                "repo": {
+                  "type": "string",
+                  "examples": [
+                    "Spoon-Knife",
+                    "docs"
+                  ],
+                  "description": "Name of the repository, without the `.git` extension (not case-sensitive)."
+                },
+                "owner": {
+                  "type": "string",
+                  "examples": [
+                    "octocat",
+                    "github"
+                  ],
+                  "description": "Username of the account owning the repository (not case-sensitive)."
+                },
+                "since": {
+                  "type": "string",
+                  "examples": [
+                    "2023-01-01T00:00:00Z"
+                  ],
+                  "description": "Filters comments to include only those updated at or after this ISO 8601 timestamp (e.g., `YYYY-MM-DDTHH:MM:SSZ`)."
+                },
+                "per_page": {
+                  "type": "integer",
+                  "default": 30,
+                  "examples": [
+                    "30",
+                    "50",
+                    "100"
+                  ],
+                  "description": "Number of comments to return per page (max 100)."
+                },
+                "issue_number": {
+                  "type": "integer",
+                  "examples": [
+                    "42",
+                    "101"
+                  ],
+                  "description": "Number that identifies the issue."
+                }
+              }
+            }
+          },
+          {
+            "slug": "GITHUB_SEARCH_ISSUES_AND_PULL_REQUESTS",
+            "toolkit": "github",
+            "description": "Searches GitHub for issues and pull requests. Supports keywords, qualifiers (repo:, org:, user:, sta...",
+            "connected": false
+          },
+          {
+            "slug": "GITHUB_GET_A_REPOSITORY",
+            "toolkit": "github",
+            "description": "Retrieves detailed information about an existing and accessible GitHub repository.",
+            "connected": false
+          },
+          {
+            "slug": "GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER",
+            "toolkit": "github",
+            "description": "Lists repositories for the authenticated user; using 'type' with 'visibility' or 'affiliation' API p...",
+            "connected": false
+          }
+        ],
+        "pitfalls": [
+          "[GITHUB_LIST_REPOSITORY_ISSUES] per_page is capped at 100; large responses may be truncated inline, so paginate and/or post-process the full payload out-of-band when needed.",
+          "[GITHUB_LIST_REPOSITORY_ISSUES] since filters by updated_at (not created_at); use GITHUB_SEARCH_ISSUES_AND_PULL_REQUESTS when creation-time criteria matter.",
+          "[GITHUB_GET_A_REPOSITORY] 404 Not Found can indicate wrong coordinates or missing access; validate before assuming the repository or issues don\u2019t exist.",
+          "[GITHUB_LIST_REPOSITORY_ISSUES] 403 Forbidden can occur under organization OAuth restrictions; fall back to GITHUB_SEARCH_ISSUES_AND_PULL_REQUESTS.",
+          "[GITHUB_SEARCH_ISSUES_AND_PULL_REQUESTS] repo-scoped q is required; results cap at ~1000 and malformed queries can return 422 Validation Failed."
+        ]
+      }
+    ],
+    "connections": [
+      {
+        "toolkit": "github",
+        "connected": false
+      }
+    ],
+    "guidance": [
+      "2) Extract validated plan steps returned above, acknowledge each step, then execute sequentially updating current_step parameter. Check pitfalls during execution."
+    ]
+  },
+  "vendor_hit_count": 0
+}

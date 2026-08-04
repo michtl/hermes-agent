@@ -1,0 +1,6 @@
+Call the app_connections tool with action "status" for exactly these toolkits:
+hackernews, github, googlecalendar, gmail, notion, slack.
+The tool requires a NON-EMPTY toolkit list, so pass all six by name.
+Do NOT use curl, bash, or the web — the point of this run is the managed bridge itself.
+Then report, as a plain list, each toolkit name the tool returned and its connection status.
+End your reply with the line: BRIDGE_OK <n> where <n> is the number of toolkits returned.

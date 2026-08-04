@@ -1,0 +1,14 @@
+{
+  "route": "search",
+  "label": "error-empty-queries",
+  "status": 400,
+  "elapsed_s": 0.0253,
+  "body": {
+    "error": {
+      "code": "BAD_REQUEST",
+      "message": "'queries' must be an array of 1 to 5 strings"
+    },
+    "requestId": "f2cdde3c-53ba-4fd7-a06b-d936910a5e3a"
+  },
+  "vendor_hit_count": 0
+}

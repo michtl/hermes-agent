@@ -1,0 +1,21 @@
+{
+  "route": "execute",
+  "label": "error-tool-level-bad-arg",
+  "status": 200,
+  "elapsed_s": 0.8124,
+  "body": {
+    "context_id": "1ef1ff9d-f8e2-44ab-b0bc-6610aa992909",
+    "results": [
+      {
+        "slug": "HACKERNEWS_GET_ITEM",
+        "successful": false,
+        "data": {
+          "message": "Invalid request data provided\n- Input should be a valid integer, unable to parse string as an integer on parameter `id`",
+          "status_code": 400
+        },
+        "error": "Invalid request data provided\n- Input should be a valid integer, unable to parse string as an integer on parameter `id`"
+      }
+    ]
+  },
+  "vendor_hit_count": 0
+}

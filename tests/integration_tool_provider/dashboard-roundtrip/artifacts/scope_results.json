@@ -1,0 +1,111 @@
+{
+  "checks": [
+    {
+      "name": "UI: Save scope issued PUT with the tool list and got 200",
+      "pass": true,
+      "evidence": "HTTP 200 body={\"slug\":\"notion\",\"enabled\":true,\"enabledToolkits\":[\"hackernews\",\"github\",\"googlecalendar\",\"gmail\",\"slack\",\"notion\"],\"toolsOverride\":[\"NOTION_FETCH_DATA\",\"NOTION_SEARCH_NOTION_PAGE\"]}"
+    },
+    {
+      "name": "DB persists the tool scope in toolOverrides",
+      "pass": true,
+      "evidence": "toolOverrides={\"notion\":[\"NOTION_FETCH_DATA\",\"NOTION_SEARCH_NOTION_PAGE\"]}"
+    },
+    {
+      "name": "NAS GET echoes the tool scope back",
+      "pass": true,
+      "evidence": "nas entry tools=[\"NOTION_FETCH_DATA\",\"NOTION_SEARCH_NOTION_PAGE\"]"
+    },
+    {
+      "name": "GW refuses /v1/schemas for a tool in a DISABLED toolkit (enforcement, not cosmetics)",
+      "pass": true,
+      "evidence": "HTTP 403 code=TOOLKIT_NOT_ENABLED schemas=[]"
+    },
+    {
+      "name": "tool scope survives a UI disable -> re-enable round-trip",
+      "pass": false,
+      "evidence": "before=[\"NOTION_FETCH_DATA\",\"NOTION_SEARCH_NOTION_PAGE\"] after=null"
+    },
+    {
+      "name": "UI after reload shows the real post-round-trip scope (empty), not a stale draft",
+      "pass": true,
+      "evidence": "textarea=\"\""
+    }
+  ],
+  "findings": [
+    {
+      "severity": "high",
+      "summary": "A UI disable -> re-enable round-trip silently DESTROYS the toolkit's saved tool scope, widening access from N tools to all tools with no warning",
+      "evidence": "Saved scope [\"NOTION_FETCH_DATA\",\"NOTION_SEARCH_NOTION_PAGE\"] for 'notion' through the dashboard; toggled the toolkit off and back on through the same page; OrgToolkitPolicy.toolOverrides is now null. Cause: NAS setToolkitEnabled() does 'delete toolOverrides[slug]' when enabled=false OR when tools is undefined, and the dashboard's handleToggle() calls api.setToolkitEnabled(slug, enabled) with NO tools field, so BOTH legs of the round-trip clear it. The UI never warns, and the re-enabled toolkit silently reverts to all-tools."
+    }
+  ],
+  "evidence": {
+    "dbAfterScopeSave": {
+      "enabledToolkits": [
+        "hackernews",
+        "github",
+        "googlecalendar",
+        "gmail",
+        "slack",
+        "notion"
+      ],
+      "toolOverrides": {
+        "notion": [
+          "NOTION_FETCH_DATA",
+          "NOTION_SEARCH_NOTION_PAGE"
+        ]
+      }
+    },
+    "nasAfterScopeSave": {
+      "slug": "notion",
+      "name": "Notion",
+      "enabled": true,
+      "connected": false,
+      "description": "Notion centralizes notes, docs, wikis, and tasks in a unified workspace, letting teams build custom workflows for collaboration and knowledge management",
+      "category": "notes",
+      "tools": [
+        "NOTION_FETCH_DATA",
+        "NOTION_SEARCH_NOTION_PAGE"
+      ]
+    },
+    "gatewayScopeEnforcement": {
+      "inScope": {
+        "status": 200,
+        "got": [
+          "NOTION_FETCH_DATA"
+        ]
+      },
+      "outOfScope": {
+        "status": 403,
+        "got": [],
+        "code": "TOOLKIT_NOT_ENABLED"
+      }
+    },
+    "dbAfterDisable": {
+      "enabledToolkits": [
+        "hackernews",
+        "github",
+        "googlecalendar",
+        "gmail",
+        "slack"
+      ],
+      "toolOverrides": null
+    },
+    "dbAfterReenable": {
+      "enabledToolkits": [
+        "hackernews",
+        "github",
+        "googlecalendar",
+        "gmail",
+        "slack",
+        "notion"
+      ],
+      "toolOverrides": null
+    },
+    "gatewayAfterRoundTrip": {
+      "status": 200,
+      "got": [
+        "NOTION_CREATE_COMMENT"
+      ]
+    }
+  }
+}

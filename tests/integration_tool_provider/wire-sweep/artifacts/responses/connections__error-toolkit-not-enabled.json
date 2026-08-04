@@ -1,0 +1,19 @@
+{
+  "route": "connections",
+  "label": "error-toolkit-not-enabled",
+  "status": 403,
+  "elapsed_s": 0.0235,
+  "body": {
+    "error": {
+      "code": "TOOLKIT_NOT_ENABLED",
+      "message": "One or more requested toolkits are not enabled",
+      "details": {
+        "toolkits": [
+          "asana"
+        ]
+      }
+    },
+    "requestId": "952f8f0f-1c5f-4feb-b5fe-de56f00ed1dd"
+  },
+  "vendor_hit_count": 0
+}

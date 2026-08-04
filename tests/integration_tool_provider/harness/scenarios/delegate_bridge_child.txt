@@ -1,0 +1,18 @@
+You are the PARENT agent. Do NOT do this work yourself.
+
+Call the delegate_task tool exactly once to spawn ONE child agent, and give the
+child this instruction verbatim:
+
+  "Use the external app tool bridge to read Hacker News. First call tool_search
+   with the query 'get hacker news top stories' to discover the available
+   hackernews tool slugs. Then call tool_call to execute the hackernews tool
+   that returns front-page / top stories, and report the REAL titles you got
+   back. You MUST NOT use the terminal tool, curl, bash, python, WebSearch, or
+   any public HTTP API — the whole point of this task is to exercise the managed
+   tool bridge, so a direct fetch is a FAILED task, not a shortcut. Finish your
+   report with the line: CHILD_BRIDGE_OK <n> where <n> is the number of real
+   story titles you retrieved through the bridge."
+
+Do not call tool_search, tool_call, or terminal yourself. Wait for the child,
+then relay the child's story titles verbatim and end your own reply with the
+line: PARENT_RELAY_OK

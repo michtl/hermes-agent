@@ -1,0 +1,6 @@
+Use the tool_search bridge tool to find external app tools for the use case
+"read the current top stories on Hacker News".
+Do NOT use curl, bash, WebSearch, or any public HTTP API — this run exists to
+exercise the managed tool bridge, so a direct fetch is a failed run, not a shortcut.
+Report the tool slugs tool_search returned and whether each is connected.
+End your reply with the line: SEARCH_OK <n> where <n> is the number of tool slugs returned.
