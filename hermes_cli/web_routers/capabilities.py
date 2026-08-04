@@ -129,25 +129,50 @@ async def _nas_request(
 async def list_toolkits():
     """Proxy NAS's toolkit catalog and per-organization state."""
     portal_url, token = await _resolve_portal_auth()
-    return await _nas_request(
+    result = await _nas_request(
         "GET",
         portal_url,
         "/api/portal/tools/toolkits",
         token,
     )
+    if isinstance(result, dict) and isinstance(result.get("toolkits"), list):
+        normalized_toolkits = []
+        for toolkit in result["toolkits"]:
+            if not isinstance(toolkit, dict):
+                normalized_toolkits.append(toolkit)
+                continue
+            normalized = dict(toolkit)
+            normalized["toolsOverride"] = normalized.pop("tools", None)
+            normalized_toolkits.append(normalized)
+        result = {**result, "toolkits": normalized_toolkits}
+    return result
 
 
 @router.put("/api/capabilities/toolkits/{slug}")
 async def set_toolkit_enabled(slug: str, body: ToolkitEnabledUpdate):
     """Proxy NAS's enable or disable toggle for one toolkit."""
     portal_url, token = await _resolve_portal_auth()
-    return await _nas_request(
+    json_body: Dict[str, Any] = {"enabled": body.enabled}
+    if "tools" in body.model_fields_set:
+        json_body["tools"] = body.tools
+    result = await _nas_request(
         "PUT",
         portal_url,
         f"/api/portal/tools/toolkits/{slug}",
         token,
-        json_body={"enabled": body.enabled},
+        json_body=json_body,
     )
+    if isinstance(result, dict):
+        normalized = dict(result)
+        overrides = normalized.pop("toolOverrides", None)
+        # NAS GET stores one override under each toolkit's `tools`, while PUT
+        # returns the complete `toolOverrides` map; the dashboard uses one
+        # `toolsOverride` field and must preserve absent versus empty scopes.
+        normalized["toolsOverride"] = (
+            overrides.get(slug) if isinstance(overrides, dict) else None
+        )
+        return normalized
+    return result
 
 
 @router.post("/api/capabilities/toolkits/{slug}/connect")

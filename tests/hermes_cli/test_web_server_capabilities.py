@@ -58,12 +58,12 @@ def _mock_async_client(monkeypatch, handler):
     monkeypatch.setattr(capabilities_module.httpx, "AsyncClient", async_client)
 
 
-def test_list_toolkits_proxies_json_unchanged(
+def test_list_toolkits_translates_all_override_states(
     client,
     fixed_portal_auth,
     monkeypatch,
 ):
-    expected = {
+    nas_response = {
         "toolkits": [
             {
                 "slug": "github",
@@ -71,7 +71,23 @@ def test_list_toolkits_proxies_json_unchanged(
                 "enabled": True,
                 "connected": True,
                 "logo": "https://cdn.example.test/github.svg",
-            }
+            },
+            {
+                "slug": "slack",
+                "name": "Slack",
+                "enabled": True,
+                "connected": True,
+                "logo": "https://cdn.example.test/slack.svg",
+                "tools": [],
+            },
+            {
+                "slug": "notion",
+                "name": "Notion",
+                "enabled": True,
+                "connected": True,
+                "logo": "https://cdn.example.test/notion.svg",
+                "tools": ["NOTION_SEARCH", "NOTION_FETCH"],
+            },
         ]
     }
 
@@ -79,14 +95,19 @@ def test_list_toolkits_proxies_json_unchanged(
         assert request.method == "GET"
         assert request.url == f"{_PORTAL_URL}/api/portal/tools/toolkits"
         assert request.headers["authorization"] == f"Bearer {_TEST_TOKEN}"
-        return httpx.Response(200, json=expected)
+        return httpx.Response(200, json=nas_response)
 
     _mock_async_client(monkeypatch, handler)
 
     response = client.get("/api/capabilities/toolkits")
 
     assert response.status_code == 200
-    assert response.json() == expected
+    toolkits = response.json()["toolkits"]
+    assert toolkits[0]["toolsOverride"] is None
+    assert toolkits[1]["toolsOverride"] == []
+    assert toolkits[2]["toolsOverride"] == ["NOTION_SEARCH", "NOTION_FETCH"]
+    assert toolkits[0]["toolsOverride"] != toolkits[1]["toolsOverride"]
+    assert all("tools" not in toolkit for toolkit in toolkits)
 
 
 def test_list_toolkits_returns_401_when_not_logged_in(client, monkeypatch):
@@ -115,13 +136,22 @@ def test_set_toolkit_enabled_forwards_body(
         "slug": "github",
         "enabled": True,
         "enabledToolkits": ["github"],
+        "toolsOverride": None,
     }
 
     def handler(request):
         assert request.method == "PUT"
         assert request.url == f"{_PORTAL_URL}/api/portal/tools/toolkits/github"
         assert json.loads(request.content) == {"enabled": True}
-        return httpx.Response(200, json=expected)
+        return httpx.Response(
+            200,
+            json={
+                "slug": "github",
+                "enabled": True,
+                "enabledToolkits": ["github"],
+                "toolOverrides": {},
+            },
+        )
 
     _mock_async_client(monkeypatch, handler)
 
@@ -132,6 +162,105 @@ def test_set_toolkit_enabled_forwards_body(
 
     assert response.status_code == 200
     assert response.json() == expected
+
+
+@pytest.mark.parametrize(
+    ("request_body", "expected_body", "nas_overrides", "expected_override"),
+    [
+        ({"enabled": True}, {"enabled": True}, {}, None),
+        (
+            {"enabled": True, "tools": []},
+            {"enabled": True, "tools": []},
+            {"github": []},
+            [],
+        ),
+        (
+            {"enabled": True, "tools": ["GITHUB_GET_REPOS", "GITHUB_GET_ISSUES"]},
+            {
+                "enabled": True,
+                "tools": ["GITHUB_GET_REPOS", "GITHUB_GET_ISSUES"],
+            },
+            {"github": ["GITHUB_GET_REPOS", "GITHUB_GET_ISSUES"]},
+            ["GITHUB_GET_REPOS", "GITHUB_GET_ISSUES"],
+        ),
+    ],
+    ids=("tools-omitted", "deny-all", "populated-scope"),
+)
+def test_set_toolkit_scope_preserves_tools_field_semantics(
+    client,
+    fixed_portal_auth,
+    monkeypatch,
+    request_body,
+    expected_body,
+    nas_overrides,
+    expected_override,
+):
+    def handler(request):
+        assert request.method == "PUT"
+        assert request.url == f"{_PORTAL_URL}/api/portal/tools/toolkits/github"
+        assert json.loads(request.content) == expected_body
+        return httpx.Response(
+            200,
+            json={
+                "slug": "github",
+                "enabled": True,
+                "enabledToolkits": ["github"],
+                "toolOverrides": nas_overrides,
+            },
+        )
+
+    _mock_async_client(monkeypatch, handler)
+
+    response = client.put(
+        "/api/capabilities/toolkits/github",
+        json=request_body,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "slug": "github",
+        "enabled": True,
+        "enabledToolkits": ["github"],
+        "toolsOverride": expected_override,
+    }
+    if expected_override == []:
+        assert response.json()["toolsOverride"] is not None
+
+
+def test_set_toolkit_scope_forwards_explicit_null_as_clear_signal(
+    client,
+    fixed_portal_auth,
+    monkeypatch,
+):
+    """An explicit `tools: null` (the dashboard's "Clear override" action)
+    must be forwarded to NAS as an explicit null, distinct from an omitted
+    field, which now means "preserve the existing scope"."""
+
+    def handler(request):
+        assert request.method == "PUT"
+        assert request.url == f"{_PORTAL_URL}/api/portal/tools/toolkits/github"
+        body = json.loads(request.content)
+        assert "tools" in body
+        assert body["tools"] is None
+        return httpx.Response(
+            200,
+            json={
+                "slug": "github",
+                "enabled": True,
+                "enabledToolkits": ["github"],
+                "toolOverrides": {},
+            },
+        )
+
+    _mock_async_client(monkeypatch, handler)
+
+    response = client.put(
+        "/api/capabilities/toolkits/github",
+        json={"enabled": True, "tools": None},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["toolsOverride"] is None
 
 
 def test_connect_unknown_toolkit_preserves_400_detail(

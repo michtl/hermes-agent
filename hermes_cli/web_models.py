@@ -631,6 +631,7 @@ class ToolsetToggle(BaseModel):
 
 class ToolkitEnabledUpdate(BaseModel):
     enabled: bool
+    tools: Optional[List[str]] = None
 
 
 # --- from web_server.py (originally lines 16199-16204) ---

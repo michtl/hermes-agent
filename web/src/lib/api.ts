@@ -1099,12 +1099,21 @@ export const api = {
       "/api/capabilities/toolkits",
     ),
   setToolkitEnabled: (slug: string, enabled: boolean) =>
-    fetchJSON<{ slug: string; enabled: boolean; enabledToolkits: string[] }>(
+    fetchJSON<CapabilityToolkitUpdateResponse>(
       `/api/capabilities/toolkits/${encodeURIComponent(slug)}`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
+      },
+    ),
+  setToolkitScope: (slug: string, update: CapabilityToolkitUpdate) =>
+    fetchJSON<CapabilityToolkitUpdateResponse>(
+      `/api/capabilities/toolkits/${encodeURIComponent(slug)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(update),
       },
     ),
   connectToolkit: (slug: string) =>
@@ -1498,9 +1507,25 @@ export interface CapabilityToolkit {
   name: string;
   enabled: boolean;
   connected: boolean;
-  logo: string;
   description?: string;
   category?: string;
+  toolsOverride?: string[] | null;
+}
+
+export interface CapabilityToolkitUpdate {
+  enabled: boolean;
+  // Absent: preserve the existing scope override untouched (used by the
+  // enable/disable toggle, which must not disturb it). Explicit `null`:
+  // clear the override so all tools are allowed again. A string array: set
+  // the override to exactly those tools.
+  tools?: string[] | null;
+}
+
+export interface CapabilityToolkitUpdateResponse {
+  slug: string;
+  enabled: boolean;
+  enabledToolkits: string[];
+  toolsOverride?: string[] | null;
 }
 
 export interface McpServer {

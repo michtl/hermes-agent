@@ -104,3 +104,34 @@ describe("api OAuth helpers", () => {
     }
   });
 });
+
+describe("api.setToolkitScope", () => {
+  it("preserves populated and empty tool scopes in the request body", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ slug: "github", enabled: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.setToolkitScope("github", {
+      enabled: true,
+      tools: ["GITHUB_GET_REPOS"],
+    });
+    await api.setToolkitScope("github", { enabled: true, tools: [] });
+
+    expect(fetchMock.mock.calls.map((call) => call[1]?.body)).toEqual([
+      JSON.stringify({ enabled: true, tools: ["GITHUB_GET_REPOS"] }),
+      JSON.stringify({ enabled: true, tools: [] }),
+    ]);
+  });
+
+  it("omits tools when clearing an override", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ slug: "github", enabled: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.setToolkitScope("github", { enabled: true });
+
+    expect(fetchMock.mock.calls[0][1]?.body).toBe(
+      JSON.stringify({ enabled: true }),
+    );
+  });
+});

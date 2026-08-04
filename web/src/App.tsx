@@ -126,6 +126,13 @@ function RootRedirect() {
   return <Navigate to="/sessions" replace />;
 }
 
+// Post MCP-fold-in redirect: MCP servers now live under Capabilities.
+// Bookmarked/linked /mcp URLs must land there, not fall through to
+// UnknownRouteFallback's default of /sessions.
+function McpRedirect() {
+  return <Navigate to="/capabilities" replace />;
+}
+
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   if (pluginsLoading) {
     // Render nothing during the plugin-load window — a spinner here would just flash.
@@ -771,6 +778,7 @@ export default function App() {
                       {routes.map(({ key, path, element }) => (
                         <Route key={key} path={path} element={element} />
                       ))}
+                      <Route path="/mcp" element={<McpRedirect />} />
                       <Route
                         path="*"
                         element={

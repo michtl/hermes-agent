@@ -4,6 +4,7 @@ import type { CapabilityToolkit } from "./api";
 import {
   FALLBACK_TOOLKIT_BRAND,
   mergeCapabilityToolkit,
+  scrubVendorMentions,
 } from "./capability-catalog";
 
 describe("mergeCapabilityToolkit", () => {
@@ -15,7 +16,6 @@ describe("mergeCapabilityToolkit", () => {
       name: "Gmail",
       enabled: true,
       connected: true,
-      logo: "https://example.com/gmail.svg",
       description: serverDescription,
       category: "email",
     };
@@ -34,7 +34,6 @@ describe("mergeCapabilityToolkit", () => {
       name: "PostHog",
       enabled: false,
       connected: false,
-      logo: "https://example.com/posthog.svg",
       category: "Analytics",
       description: "Product analytics.",
     };
@@ -52,7 +51,6 @@ describe("mergeCapabilityToolkit", () => {
       name: "PostHog",
       enabled: false,
       connected: false,
-      logo: "https://example.com/posthog.svg",
     };
 
     const result = mergeCapabilityToolkit(toolkit);
@@ -60,5 +58,76 @@ describe("mergeCapabilityToolkit", () => {
     expect(result.category).toBe("Other");
     expect(result.description).toBe("");
     expect(result.brand).toBe(FALLBACK_TOOLKIT_BRAND);
+  });
+
+  it("passes through an explicit empty tool override unchanged", () => {
+    const toolkit: CapabilityToolkit = {
+      slug: "github",
+      name: "GitHub",
+      enabled: true,
+      connected: true,
+      toolsOverride: [],
+    };
+
+    const result = mergeCapabilityToolkit(toolkit);
+
+    expect(result.toolsOverride).toBe(toolkit.toolsOverride);
+    expect(result.toolsOverride).toEqual([]);
+  });
+
+  it("scrubs a vendor mention in the server description so it never reaches the DOM", () => {
+    const toolkit: CapabilityToolkit = {
+      slug: "browser_tool",
+      name: "Browser Tool",
+      enabled: true,
+      connected: true,
+      description:
+        "Composio's browser automation tool for navigating and scraping pages.",
+    };
+
+    const result = mergeCapabilityToolkit(toolkit);
+
+    expect(result.description.toLowerCase()).not.toContain("composio");
+    // Redacted, not blanked: the sentence still reads.
+    expect(result.description).toBe(
+      "the tool provider's browser automation tool for navigating and scraping pages.",
+    );
+  });
+
+  it("scrubs mid-sentence and mixed-case vendor mentions", () => {
+    expect(scrubVendorMentions("Built by COMPOSIO for agents.")).toBe(
+      "Built by the tool provider for agents.",
+    );
+    expect(scrubVendorMentions("No vendor mention here.")).toBe(
+      "No vendor mention here.",
+    );
+  });
+});
+
+describe("catalog rendering guard", () => {
+  it("scans a rendered catalog fixture and finds no vendor substring", () => {
+    const rawToolkits: CapabilityToolkit[] = [
+      {
+        slug: "browser_tool",
+        name: "Browser Tool",
+        enabled: true,
+        connected: true,
+        description: "Composio's browser automation tool.",
+      },
+      {
+        slug: "gmail",
+        name: "Gmail",
+        enabled: true,
+        connected: true,
+        description: "Send & manage email.",
+      },
+    ];
+
+    const rendered = rawToolkits
+      .map(mergeCapabilityToolkit)
+      .map((t) => `${t.name}|${t.category}|${t.description}`)
+      .join("\n");
+
+    expect(rendered.toLowerCase()).not.toContain("composio");
   });
 });

@@ -90,6 +90,21 @@ function ToolkitStatus({ toolkit }: { toolkit: MergedCapabilityToolkit }) {
   return <Badge tone="outline">Disabled</Badge>;
 }
 
+export function parseToolScope(value: string): string[] {
+  return [
+    ...new Set(
+      value
+        .split(/[\n,]/)
+        .map((slug) => slug.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function toolScopeDraft(toolkit: CapabilityToolkit | undefined): string {
+  return toolkit?.toolsOverride?.join("\n") ?? "";
+}
+
 export default function CapabilitiesPage() {
   const [toolkits, setToolkits] = useState<CapabilityToolkit[]>([]);
   const [loading, setLoading] = useState(true);
@@ -110,6 +125,9 @@ export default function CapabilitiesPage() {
   const [connectingSlugs, setConnectingSlugs] = useState<Set<string>>(
     () => new Set(),
   );
+  const [scopeDraft, setScopeDraft] = useState("");
+  const [scopeDirty, setScopeDirty] = useState(false);
+  const [savingScope, setSavingScope] = useState(false);
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
 
@@ -206,6 +224,10 @@ export default function CapabilitiesPage() {
     () => mergedToolkits.find((toolkit) => toolkit.slug === selectedSlug),
     [mergedToolkits, selectedSlug],
   );
+  useEffect(() => {
+    setScopeDraft(toolScopeDraft(selectedToolkit));
+    setScopeDirty(false);
+  }, [selectedToolkit?.slug, selectedToolkit?.toolsOverride]);
   const closePanel = useCallback(() => setSelectedSlug(null), []);
   const modalRef = useModalBehavior({
     open: selectedToolkit !== undefined,
@@ -243,7 +265,11 @@ export default function CapabilitiesPage() {
       setToolkits((previous) =>
         previous.map((item) =>
           item.slug === toolkit.slug
-            ? { ...item, enabled: result.enabled }
+            ? {
+                ...item,
+                enabled: result.enabled,
+                toolsOverride: result.toolsOverride ?? null,
+              }
             : item,
         ),
       );
@@ -299,6 +325,59 @@ export default function CapabilitiesPage() {
         next.delete(toolkit.slug);
         return next;
       });
+    }
+  };
+
+  const reconcileScope = (slug: string, nextToolkits: CapabilityToolkit[]) => {
+    setToolkits(nextToolkits);
+    const storedToolkit = nextToolkits.find((toolkit) => toolkit.slug === slug);
+    setScopeDraft(toolScopeDraft(storedToolkit));
+    setScopeDirty(false);
+  };
+
+  const handleSaveScope = async () => {
+    if (!selectedToolkit) return;
+    const tools = parseToolScope(scopeDraft);
+    if (
+      tools.length === 0 &&
+      !window.confirm(
+        "Save an empty scope? This blocks all tools in this toolkit.",
+      )
+    ) {
+      return;
+    }
+
+    const { slug, enabled } = selectedToolkit;
+    setSavingScope(true);
+    try {
+      await api.setToolkitScope(slug, { enabled, tools });
+      const result = await api.getCapabilityToolkits();
+      reconcileScope(slug, result.toolkits);
+      showToast("Tool scope saved.", "success");
+    } catch (error) {
+      showToast(`Error: ${error}`, "error");
+    } finally {
+      setSavingScope(false);
+    }
+  };
+
+  const handleClearScope = async () => {
+    if (!selectedToolkit) return;
+    const { slug, enabled } = selectedToolkit;
+    setSavingScope(true);
+    try {
+      // Explicit `tools: null` is the clear-override signal: NAS treats an
+      // absent `tools` field as "preserve the existing scope" (that's what
+      // the enable/disable toggle relies on), so clearing must send null
+      // rather than omit the field.
+      await api.setToolkitScope(slug, { enabled, tools: null });
+      const result = await api.getCapabilityToolkits();
+      reconcileScope(slug, result.toolkits);
+      showToast("Tool scope removed. All tools are allowed.", "success");
+    } catch (error) {
+      showToast(`Error: ${error}`, "error");
+    } finally {
+      setSavingScope(false);
     }
   };
 
@@ -553,6 +632,73 @@ export default function CapabilitiesPage() {
                     Tool list preview not available for this app yet.
                   </p>
                 )}
+              </div>
+
+              <div className="flex flex-col gap-3 border-t border-border pt-6">
+                <div className="flex flex-wrap items-center gap-2">
+                  <H2 variant="sm" className="text-muted-foreground">
+                    Tool scope
+                  </H2>
+                  {selectedToolkit.toolsOverride == null ? (
+                    <Badge tone="outline">All tools allowed</Badge>
+                  ) : selectedToolkit.toolsOverride.length > 0 ? (
+                    <Badge tone="secondary">
+                      Scoped to {selectedToolkit.toolsOverride.length} tools
+                    </Badge>
+                  ) : (
+                    <Badge tone="warning">
+                      Scoped to none — all tools blocked
+                    </Badge>
+                  )}
+                </div>
+                {selectedToolkit.toolsOverride?.length === 0 && (
+                  <p className="text-xs text-warning">
+                    This explicit empty scope blocks every tool in the toolkit.
+                  </p>
+                )}
+                <p className="text-sm text-muted-foreground">
+                  Enter tool slugs separated by commas or new lines.
+                </p>
+                {/* NAS exposes a toolkit catalog, not a tool catalog, so there is no source for a picker until a tool-listing endpoint exists. */}
+                <textarea
+                  aria-label="Tool slugs"
+                  className="flex min-h-[96px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:border-foreground/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30"
+                  placeholder={"GITHUB_GET_REPOS\nGITHUB_GET_ISSUES"}
+                  value={scopeDraft}
+                  onChange={(event) => {
+                    setScopeDraft(event.target.value);
+                    setScopeDirty(true);
+                  }}
+                />
+                {parseToolScope(scopeDraft).length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    Saving this empty scope will block all tools and requires
+                    confirmation.
+                  </p>
+                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    disabled={savingScope}
+                    prefix={savingScope ? <Spinner /> : undefined}
+                    onClick={() => void handleSaveScope()}
+                  >
+                    Save scope
+                  </Button>
+                  <Button
+                    ghost
+                    size="sm"
+                    disabled={
+                      savingScope || selectedToolkit.toolsOverride == null
+                    }
+                    onClick={() => void handleClearScope()}
+                  >
+                    Clear override
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    {scopeDirty ? "Unsaved changes" : "Matches saved scope"}
+                  </span>
+                </div>
               </div>
             </div>
           </div>

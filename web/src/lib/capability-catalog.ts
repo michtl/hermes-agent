@@ -248,18 +248,37 @@ export interface MergedCapabilityToolkit extends CapabilityToolkit {
   category: string;
   brand: string;
   description: string;
+  toolsOverride?: string[] | null;
 }
 
 const catalogBySlug = new Map(
   CAPABILITY_CATALOG.map((entry) => [entry.slug, entry]),
 );
 
+// The tool-provider vendor must never be named on any user-visible surface.
+// Server-supplied free-text fields (description, etc.) come from the
+// vendor's own live catalog and can contain the vendor's name spelled out
+// (see toolkit `browser_tool`, whose description begins with it). Scrub any
+// mention before it reaches the DOM, redacting rather than blanking so the
+// sentence still reads naturally.
+const VENDOR_NAME_PATTERN = /composio/gi;
+const VENDOR_REPLACEMENT = "the tool provider";
+
+/**
+ * Redact vendor-name mentions from a single free-text catalog field. Applied
+ * to every prose field that can originate from the vendor's live catalog, so
+ * a future field cannot bypass the scrub by rendering directly.
+ */
+export function scrubVendorMentions(text: string): string {
+  return text.replace(VENDOR_NAME_PATTERN, VENDOR_REPLACEMENT);
+}
+
 /**
  * Enrich a server-supplied toolkit with local presentation data (brand color,
  * category, description) where this repo's curated catalog has an entry for
- * its slug. The server catalog (NAS's live top-100-by-usage Composio toolkit
- * list) is the source of truth for WHICH toolkits exist; this local catalog
- * is enrichment only, for a subset of well-known slugs.
+ * its slug. The server catalog (NAS's live top-100-by-usage catalog list) is
+ * the source of truth for WHICH toolkits exist; this local catalog is
+ * enrichment only, for a subset of well-known slugs.
  *
  * - brand: local catalog's brand color if the slug matches, else a neutral
  *   fallback (no server equivalent exists).
@@ -268,17 +287,20 @@ const catalogBySlug = new Map(
  *   provided one; otherwise "Other".
  * - description: the server's description when present (it's the richer,
  *   live-fetched copy); otherwise the local catalog's short blurb if the
- *   slug matches; otherwise an empty string.
+ *   slug matches; otherwise an empty string. Always scrubbed of vendor
+ *   mentions before it reaches callers, since it can carry raw vendor
+ *   catalog prose.
  */
 export function mergeCapabilityToolkit(
   toolkit: CapabilityToolkit,
 ): MergedCapabilityToolkit {
   const catalogEntry = catalogBySlug.get(toolkit.slug);
+  const description = toolkit.description ?? catalogEntry?.description ?? "";
   return {
     ...toolkit,
     category: catalogEntry?.category ?? toolkit.category ?? "Other",
     brand: catalogEntry?.brand ?? FALLBACK_TOOLKIT_BRAND,
-    description: toolkit.description ?? catalogEntry?.description ?? "",
+    description: scrubVendorMentions(description),
   };
 }
 
