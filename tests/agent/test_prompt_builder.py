@@ -457,7 +457,23 @@ class TestBuildNousSubscriptionPrompt:
             {"tool_search"}, connected_toolkits=["gmail"]
         )
 
-        assert "External app tools: connected — gmail" in prompt
+        assert prompt == "\n".join(
+            [
+                "# Nous Subscription",
+                "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, OpenAI Whisper STT, and browser automation (Browser Use) by default. Modal execution is optional.",
+                "Current capability status:",
+                "- Web tools: active via Nous subscription",
+                "- External app tools: connected — gmail.",
+                "- App workflow: discover with tool_search; before using an account-backed app, check or mint its connection with manage_tool_connections.",
+                "- If it returns a link, give it to the user and wait; do not retry app tools until it reports connected.",
+                "- Prefer these tools over terminal/curl for third-party apps; they use the user's authenticated account.",
+                "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, OpenAI Whisper, or Browser-Use API keys.",
+                "If the user is not subscribed and asks for a capability that Nous subscription would unlock or simplify, suggest Nous subscription as one option alongside direct setup or local alternatives.",
+                "Do not mention subscription unless the user asks about it or it directly solves the current missing capability.",
+                "Useful commands: hermes setup, hermes setup tools, hermes setup terminal, hermes status.",
+            ]
+        )
+        assert "composio" not in prompt.lower()
 
     def test_empty_connected_toolkits_show_connection_guidance(self, monkeypatch):
         self._enable_with_stub_features(monkeypatch)
@@ -466,8 +482,23 @@ class TestBuildNousSubscriptionPrompt:
             {"tool_search"}, connected_toolkits=[]
         )
 
-        assert "available via tool_search" in prompt
-        assert "app_connections" in prompt
+        assert prompt == "\n".join(
+            [
+                "# Nous Subscription",
+                "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, OpenAI Whisper STT, and browser automation (Browser Use) by default. Modal execution is optional.",
+                "Current capability status:",
+                "- Web tools: active via Nous subscription",
+                "- External app tools: available.",
+                "- App workflow: discover with tool_search; before using an account-backed app, check or mint its connection with manage_tool_connections.",
+                "- If it returns a link, give it to the user and wait; do not retry app tools until it reports connected.",
+                "- Prefer these tools over terminal/curl for third-party apps; they use the user's authenticated account.",
+                "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, OpenAI Whisper, or Browser-Use API keys.",
+                "If the user is not subscribed and asks for a capability that Nous subscription would unlock or simplify, suggest Nous subscription as one option alongside direct setup or local alternatives.",
+                "Do not mention subscription unless the user asks about it or it directly solves the current missing capability.",
+                "Useful commands: hermes setup, hermes setup tools, hermes setup terminal, hermes status.",
+            ]
+        )
+        assert "composio" not in prompt.lower()
 
     def test_omitted_connected_toolkits_preserves_exact_output(self, monkeypatch):
         self._enable_with_stub_features(monkeypatch)

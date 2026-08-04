@@ -94,6 +94,7 @@ class ProviderConnection:
     status: str
     connect_url: Optional[str] = None
     account_hint: Optional[str] = None
+    note: Optional[str] = None
 
 
 def resolve_tool_provider_gateway() -> Optional[ManagedToolGatewayConfig]:
@@ -310,8 +311,11 @@ async def connections(
     action: str,
     *,
     context_id: Optional[str] = None,
+    reinitiate: bool = False,
 ) -> List[ProviderConnection]:
     payload: Dict[str, Any] = {"toolkits": toolkits, "action": action}
+    if action == "manage":
+        payload["reinitiate"] = reinitiate
     if context_id:
         payload["context_id"] = context_id
 
@@ -329,6 +333,7 @@ async def connections(
                 status=str(raw_connection.get("status") or ""),
                 connect_url=_optional_string(raw_connection.get("connect_url")),
                 account_hint=_optional_string(raw_connection.get("account_hint")),
+                note=_optional_string(raw_connection.get("note")),
             )
         )
     return parsed

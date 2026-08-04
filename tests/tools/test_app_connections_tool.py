@@ -48,7 +48,10 @@ def test_tool_is_wired_as_gated_core_tool():
     assert entry is not None
     assert entry.toolset == "app_connections"
     assert entry.check_fn is app_connections_tool.check_app_connections_available
-    assert TOOLSETS["app_connections"]["tools"] == ["app_connections"]
+    assert TOOLSETS["app_connections"]["tools"] == [
+        "app_connections",
+        "manage_tool_connections",
+    ]
     assert "app_connections" in _HERMES_CORE_TOOLS
 
 

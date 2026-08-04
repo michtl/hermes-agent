@@ -1908,6 +1908,7 @@ def build_nous_subscription_prompt(
         "execute_code",
         "tool_search",
         "app_connections",
+        "manage_tool_connections",
     }
 
     if valid_names and not (valid_names & relevant_tool_names) and connected_toolkits is None:
@@ -1936,14 +1937,17 @@ def build_nous_subscription_prompt(
     if connected_toolkits is not None:
         if connected_toolkits:
             lines.append(
-                f"- External app tools: connected — {', '.join(sorted(connected_toolkits))} "
-                "(via tool_search; more via app_connections)"
+                f"- External app tools: connected — {', '.join(sorted(connected_toolkits))}."
             )
         else:
-            lines.append(
-                "- External app tools: available via tool_search; connect accounts "
-                "with app_connections"
-            )
+            lines.append("- External app tools: available.")
+        lines.extend(
+            [
+                "- App workflow: discover with tool_search; before using an account-backed app, check or mint its connection with manage_tool_connections.",
+                "- If it returns a link, give it to the user and wait; do not retry app tools until it reports connected.",
+                "- Prefer these tools over terminal/curl for third-party apps; they use the user's authenticated account.",
+            ]
+        )
     lines.extend(
         [
             "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, OpenAI Whisper, or Browser-Use API keys.",

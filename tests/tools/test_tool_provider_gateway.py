@@ -330,6 +330,12 @@ def test_endpoint_urls_and_authorization_header(monkeypatch):
         FakeResponse(body={"schemas": []}),
         FakeResponse(body={"context_id": "ctx", "results": []}),
         FakeResponse(body={"connections": []}),
+        FakeResponse(body={"connections": [{
+            "toolkit": "gmail",
+            "status": "pending",
+            "connect_url": "https://connect.example/gmail",
+            "note": "Open this short-lived link.",
+        }]}),
     ])
     config = _config("https://tools-gateway.example.com/")
 
@@ -337,17 +343,28 @@ def test_endpoint_urls_and_authorization_header(monkeypatch):
     asyncio.run(tool_provider_gateway.schemas(config, ["GMAIL_FETCH_EMAILS"]))
     asyncio.run(tool_provider_gateway.execute(config, [{"slug": "X", "arguments": {}}]))
     asyncio.run(tool_provider_gateway.connections(config, ["gmail"], "status"))
+    managed = asyncio.run(tool_provider_gateway.connections(
+        config, ["gmail"], "manage", reinitiate=True
+    ))
 
     assert [call["url"] for call in calls] == [
         "https://tools-gateway.example.com/v1/search",
         "https://tools-gateway.example.com/v1/schemas",
         "https://tools-gateway.example.com/v1/execute",
         "https://tools-gateway.example.com/v1/connections",
+        "https://tools-gateway.example.com/v1/connections",
     ]
     assert all(call["headers"] == {
         "Authorization": "Bearer nous-token",
         "Content-Type": "application/json",
     } for call in calls)
+    assert calls[4]["json"] == {
+        "toolkits": ["gmail"],
+        "action": "manage",
+        "reinitiate": True,
+    }
+    assert managed[0].connect_url == "https://connect.example/gmail"
+    assert managed[0].note == "Open this short-lived link."
 
 
 def test_optional_request_fields_are_omitted(monkeypatch):
@@ -356,17 +373,24 @@ def test_optional_request_fields_are_omitted(monkeypatch):
         FakeResponse(body={"schemas": []}),
         FakeResponse(body={"context_id": "ctx", "results": []}),
         FakeResponse(body={"connections": []}),
+        FakeResponse(body={"connections": []}),
     ])
 
     asyncio.run(tool_provider_gateway.search(_config(), ["mail"]))
     asyncio.run(tool_provider_gateway.schemas(_config(), ["GMAIL_FETCH_EMAILS"]))
     asyncio.run(tool_provider_gateway.execute(_config(), [{"slug": "X", "arguments": {}}]))
     asyncio.run(tool_provider_gateway.connections(_config(), ["gmail"], "status"))
+    asyncio.run(tool_provider_gateway.connections(_config(), [], "manage"))
 
     assert calls[0]["json"] == {"queries": ["mail"]}
     assert calls[1]["json"] == {"tool_slugs": ["GMAIL_FETCH_EMAILS"]}
     assert calls[2]["json"] == {"tools": [{"slug": "X", "arguments": {}}]}
     assert calls[3]["json"] == {"toolkits": ["gmail"], "action": "status"}
+    assert calls[4]["json"] == {
+        "toolkits": [],
+        "action": "manage",
+        "reinitiate": False,
+    }
 
 
 def test_malformed_success_response_degrades_gracefully(monkeypatch):
