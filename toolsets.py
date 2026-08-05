@@ -73,7 +73,7 @@ _HERMES_CORE_TOOLS = [
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # External app-tool connections (gated on the tool-provider gateway via check_fn)
-    "app_connections",
+    "app_connections", "manage_tool_connections",
     # Kanban multi-agent coordination — only in schema when the agent is
     # spawned as a kanban worker (HERMES_KANBAN_TASK env set) or the current
     # profile explicitly enables the kanban toolset. Gated via check_fn in
@@ -288,7 +288,7 @@ TOOLSETS = {
 
     "app_connections": {
         "description": "Check/establish connections to external app accounts used by tool_search / tool_call (Gmail, GitHub, etc.)",
-        "tools": ["app_connections"],
+        "tools": ["app_connections", "manage_tool_connections"],
         "includes": []
     },
 
