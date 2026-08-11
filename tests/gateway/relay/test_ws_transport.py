@@ -17,6 +17,10 @@ import json
 import pytest
 import pytest_asyncio
 
+from gateway.relay.descriptor import (
+    CONTRACT_VERSION,
+    OWNER_BOUND_INTERRUPT_ACK_CAPABILITY,
+)
 from gateway.relay.ws_transport import WebSocketRelayTransport, WEBSOCKETS_AVAILABLE
 
 pytestmark = pytest.mark.skipif(not WEBSOCKETS_AVAILABLE, reason="websockets not installed")
@@ -26,7 +30,7 @@ if WEBSOCKETS_AVAILABLE:
 
 
 DESCRIPTOR = {
-    "contract_version": 1,
+    "contract_version": CONTRACT_VERSION,
     "platform": "discord",
     "label": "Discord",
     "max_message_length": 2000,
@@ -35,6 +39,7 @@ DESCRIPTOR = {
     "supports_threads": True,
     "markdown_dialect": "discord",
     "len_unit": "chars",
+    "capabilities": [OWNER_BOUND_INTERRUPT_ACK_CAPABILITY],
 }
 
 
@@ -105,8 +110,18 @@ async def test_handshake_negotiates_descriptor(server):
         hello = next(f for f in server.received if f["type"] == "hello")
         assert hello["platform"] == "discord"
         assert hello["botId"] == "appShared"
+        assert isinstance(hello["runtime_epoch"], str)
+        assert len(hello["runtime_epoch"]) == 32
+        assert hello["runtime_epoch"] == t._runtime_epoch
     finally:
         await t.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_runtime_epoch_is_unique_after_transport_restart(server):
+    first = WebSocketRelayTransport(server.url, "discord", "appShared")
+    replacement = WebSocketRelayTransport(server.url, "discord", "appShared")
+    assert first._runtime_epoch != replacement._runtime_epoch
 
 
 @pytest.mark.asyncio
@@ -206,5 +221,3 @@ async def test_4401_after_handshake_is_terminal_no_reconnect():
     finally:
         await t.disconnect()
         await srv.stop()
-
-

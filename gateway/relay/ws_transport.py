@@ -5,17 +5,20 @@ speaks the newline-delimited JSON frame protocol defined in the connector repo
 (``gateway-gateway`` ``src/relay/protocol.ts``) and mirrored in
 ``docs/relay-connector-contract.md``:
 
-  gateway -> connector : hello, outbound, interrupt
+  gateway -> connector : hello, outbound, interrupt, interrupt_result
   connector -> gateway : descriptor, inbound, outbound_result, interrupt_inbound
 
 Frames:
-  hello            {type, platform, botId}
+  hello            {type, platform, botId, contract_version, capabilities,
+                    runtime_epoch}
   descriptor       {type, descriptor}                       (handshake reply)
   inbound          {type, event, bufferId?}                 (a normalized MessageEvent)
   outbound         {type, requestId, action}                (send/edit/typing/follow_up)
   outbound_result  {type, requestId, result}
   interrupt        {type, session_key, reason?}             (gateway egresses /stop)
-  interrupt_inbound{type, session_key, chat_id}             (connector -> owning gateway)
+  interrupt_inbound{type, session_key, chat_id, owner_id,
+                    action_id}                              (connector -> owning gateway)
+  interrupt_result {type, action_id, accepted, reason}      (gateway -> connector)
 
 This is the concrete transport behind the ``RelayTransport`` Protocol; the
 ``RelayAdapter`` delegates all wire I/O to it. Outbound calls block on a
@@ -34,13 +37,19 @@ import json
 import logging
 import os
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from gateway.platforms.base import MessageEvent, MessageType
+from gateway.interrupt_budget import INTERRUPT_HANDLER_TIMEOUT_SECONDS
 from gateway.session import SessionSource
-from gateway.relay.descriptor import CapabilityDescriptor
-from gateway.relay.transport import InboundHandler
+from gateway.relay.descriptor import (
+    CONTRACT_VERSION,
+    OWNER_BOUND_INTERRUPT_ACK_CAPABILITY,
+    CapabilityDescriptor,
+)
+from gateway.relay.transport import InboundHandler, normalize_owner_id
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +75,22 @@ _TEARDOWN_AWAIT_TIMEOUT_S = 1.0
 # asyncio.wait_for; blowing that budget cancels teardown mid-drain, skips the
 # fail-pending loop, and leaves callers blocked on _OUTBOUND_TIMEOUT_S).
 _DISCONNECT_DRAIN_GRACE_S = 5.0
+_INTERRUPT_HANDLER_TIMEOUT_S = INTERRUPT_HANDLER_TIMEOUT_SECONDS
+_INTERRUPT_QUEUE_PER_SESSION = 8
+_INTERRUPT_ACTION_CACHE = 512
+_INTERRUPT_MAX_SESSION_WORKERS = 64
+_INTERRUPT_MAX_TRACKED_TASKS = 128
+
+
+def _normalize_control_identifier(value: Any, *, max_length: int) -> Optional[str]:
+    """Validate opaque frame-boundary identifiers without coercion/aliasing."""
+    if not isinstance(value, str):
+        return None
+    if not value or value != value.strip() or len(value) > max_length:
+        return None
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        return None
+    return value
 
 
 def _disconnect_drain_grace_s(budget_s: Optional[float] = None) -> float:
@@ -383,6 +408,8 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
             if isinstance(raw.get("prompt_response"), dict)
             else None
         ),
+        owner_id=normalize_owner_id(raw.get("owner_id")),
+        prompt_response_present="prompt_response" in raw,
     )
 
 
@@ -477,6 +504,11 @@ class WebSocketRelayTransport:
         # (dev/test, or a connector that doesn't enforce auth).
         self._gateway_id = gateway_id
         self._upgrade_secret = upgrade_secret
+        # Process-lifetime transport identity. Reconnects reuse this epoch;
+        # a gateway restart constructs a new transport and therefore a new
+        # value, allowing the connector to reconcile a phantom active owner
+        # without treating a transient socket break as terminal.
+        self._runtime_epoch = uuid.uuid4().hex
 
         # Phase 5 §5.3: a NET-NEW reconnect supervisor. The base transport's
         # _read_loop just ends on socket close ("reconnection is caller policy");
@@ -520,6 +552,10 @@ class WebSocketRelayTransport:
         self._descriptor_ready: asyncio.Future[CapabilityDescriptor] | None = None
         # requestId -> future awaiting the matching outbound_result.
         self._pending: Dict[str, asyncio.Future[Dict[str, Any]]] = {}
+        self._interrupt_queues: Dict[str, asyncio.Queue] = {}
+        self._interrupt_tasks: set[asyncio.Task] = set()
+        self._interrupt_workers: Dict[str, asyncio.Task] = {}
+        self._interrupt_actions: OrderedDict[str, None] = OrderedDict()
         # Phase 5 §5.3: future awaiting the connector's going_idle_ack.
         self._going_idle_ack: asyncio.Future[None] | None = None
         self._closing = False
@@ -582,7 +618,14 @@ class WebSocketRelayTransport:
         # sends exactly one hello — byte-identical to before. The descriptor for
         # the FIRST identity resolves handshake(); later descriptors are absorbed.
         for platform, bot_id in self._identities:
-            hello: Dict[str, Any] = {"type": "hello", "platform": platform, "botId": bot_id}
+            hello: Dict[str, Any] = {
+                "type": "hello",
+                "platform": platform,
+                "botId": bot_id,
+                "contract_version": CONTRACT_VERSION,
+                "capabilities": [OWNER_BOUND_INTERRUPT_ACK_CAPABILITY],
+                "runtime_epoch": self._runtime_epoch,
+            }
             # Phase 4: declare the gateway's slash-command set on the Discord
             # hello. The connector (which holds the bot token) reconciles
             # Discord's global registration against it — idempotent, detached,
@@ -656,6 +699,7 @@ class WebSocketRelayTransport:
                 except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
                     pass
                 self._reader = None
+            await self._cancel_interrupt_tasks()
             if self._ws is not None:
                 try:
                     await asyncio.wait_for(self._ws.close(), timeout=_TEARDOWN_AWAIT_TIMEOUT_S)
@@ -999,6 +1043,7 @@ class WebSocketRelayTransport:
                     fut.set_result(
                         {"success": False, "error": "relay transport connection lost"}
                     )
+            await self._cancel_interrupt_tasks()
             self._pending.clear()
 
     @staticmethod
@@ -1056,6 +1101,30 @@ class WebSocketRelayTransport:
         ftype = frame.get("type")
         if ftype == "descriptor":
             descriptor = CapabilityDescriptor.from_json(json.dumps(frame.get("descriptor", {})))
+            if (
+                descriptor.contract_version != CONTRACT_VERSION
+                or not descriptor.supports_capability(
+                    OWNER_BOUND_INTERRUPT_ACK_CAPABILITY
+                )
+            ):
+                logger.warning(
+                    "relay descriptor rejected reason=owner_bound_interrupt_ack_required"
+                )
+                error = RuntimeError("relay connector contract v2 required")
+                if (
+                    self._descriptor_ready is not None
+                    and not self._descriptor_ready.done()
+                ):
+                    self._descriptor_ready.set_exception(error)
+                if self._ws is not None:
+                    try:
+                        await self._ws.close(
+                            code=4406,
+                            reason="relay contract v2 required",
+                        )
+                    except Exception:  # noqa: BLE001 - fail-closed best-effort close
+                        logger.debug("relay incompatible descriptor close failed")
+                return
             # Phase 1.5 multi-platform: one descriptor frame arrives per hello'd
             # identity. Accumulate them keyed by the descriptor's own platform so
             # the adapter can resolve PER-CHAT capabilities (e.g. Discord's 2000
@@ -1097,10 +1166,7 @@ class WebSocketRelayTransport:
             if fut is not None and not fut.done():
                 fut.set_result(frame.get("result", {}))
         elif ftype == "interrupt_inbound":
-            # Bridged into the adapter's interrupt path by the runner wiring.
-            handler = getattr(self, "_interrupt_inbound_handler", None)
-            if handler is not None:
-                await handler(frame.get("session_key", ""), frame.get("chat_id", ""))
+            self._queue_interrupt(frame)
         elif ftype == "passthrough_forward":
             # Phase 5 §5.1: a forwarded passthrough-plane request (Discord
             # interaction, Twilio, …) the connector already edge-ACKed. It rides
@@ -1114,6 +1180,187 @@ class WebSocketRelayTransport:
         else:
             # hello/outbound/interrupt are gateway->connector; ignore if echoed.
             pass
+
+    def _ensure_interrupt_state(self) -> None:
+        """Initialize control state for normal and object.__new__ test instances."""
+        if not hasattr(self, "_interrupt_queues"):
+            self._interrupt_queues = {}
+        if not hasattr(self, "_interrupt_tasks"):
+            self._interrupt_tasks = set()
+        if not hasattr(self, "_interrupt_workers"):
+            self._interrupt_workers = {}
+        if not hasattr(self, "_interrupt_actions"):
+            self._interrupt_actions = OrderedDict()
+
+    def _track_interrupt_task(self, task: asyncio.Task) -> None:
+        self._interrupt_tasks.add(task)
+        task.add_done_callback(self._interrupt_task_done)
+
+    def _interrupt_task_done(self, task: asyncio.Task) -> None:
+        """Consume detached task failures and retire their bookkeeping."""
+        self._interrupt_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            return
+        if error is not None:
+            logger.warning(
+                "relay interrupt task failed type=%s",
+                type(error).__name__,
+            )
+
+    async def _send_interrupt_result(
+        self, action_id: str, accepted: bool, reason: str
+    ) -> None:
+        await self._send({
+            "type": "interrupt_result",
+            "action_id": action_id,
+            "accepted": accepted,
+            "reason": reason,
+        })
+
+    def _spawn_interrupt_result(
+        self, action_id: str, accepted: bool, reason: str
+    ) -> None:
+        self._ensure_interrupt_state()
+        active_tasks = sum(not task.done() for task in self._interrupt_tasks)
+        if active_tasks >= _INTERRUPT_MAX_TRACKED_TASKS:
+            logger.warning("relay interrupt result dropped reason=task_capacity")
+            return
+        task = asyncio.create_task(
+            self._send_interrupt_result(action_id, accepted, reason)
+        )
+        self._track_interrupt_task(task)
+
+    def _queue_interrupt(self, frame: Dict[str, Any]) -> None:
+        """Validate and enqueue an owner-bound Stop without blocking the reader."""
+        self._ensure_interrupt_state()
+        action_id = _normalize_control_identifier(
+            frame.get("action_id"), max_length=128
+        )
+        if action_id is None:
+            logger.info("relay interrupt dropped reason=invalid_action_id")
+            return
+        if action_id in self._interrupt_actions:
+            logger.info("relay interrupt duplicate action")
+            return
+        self._interrupt_actions[action_id] = None
+        while len(self._interrupt_actions) > _INTERRUPT_ACTION_CACHE:
+            self._interrupt_actions.popitem(last=False)
+
+        session_key = _normalize_control_identifier(
+            frame.get("session_key"), max_length=512
+        )
+        chat_id = _normalize_control_identifier(frame.get("chat_id"), max_length=256)
+        owner_id = normalize_owner_id(frame.get("owner_id"))
+        descriptor = getattr(self, "_descriptor", None)
+        reason = None
+        if (
+            descriptor is None
+            or not descriptor.supports_capability(
+                OWNER_BOUND_INTERRUPT_ACK_CAPABILITY
+            )
+        ):
+            reason = "capability_not_negotiated"
+        elif session_key is None or chat_id is None:
+            reason = "invalid_binding"
+        elif owner_id is None:
+            reason = "invalid_owner"
+
+        if reason is not None:
+            logger.info(
+                "relay interrupt rejected reason=%s session_bound=%s owner_bound=%s",
+                reason,
+                "yes" if session_key else "no",
+                "yes" if owner_id else "no",
+            )
+            self._spawn_interrupt_result(action_id, False, reason)
+            return
+
+        assert session_key is not None
+        assert chat_id is not None
+        assert owner_id is not None
+        queue = self._interrupt_queues.get(session_key)
+        if queue is None:
+            if len(self._interrupt_queues) >= _INTERRUPT_MAX_SESSION_WORKERS:
+                self._spawn_interrupt_result(action_id, False, "interrupt_busy")
+                return
+            queue = asyncio.Queue(maxsize=_INTERRUPT_QUEUE_PER_SESSION)
+            self._interrupt_queues[session_key] = queue
+        try:
+            queue.put_nowait((action_id, session_key, chat_id, owner_id))
+        except asyncio.QueueFull:
+            self._spawn_interrupt_result(action_id, False, "interrupt_busy")
+            return
+        worker = self._interrupt_workers.get(session_key)
+        if worker is None or worker.done():
+            worker = asyncio.create_task(
+                self._run_interrupt_queue(session_key, queue)
+            )
+            self._interrupt_workers[session_key] = worker
+            self._track_interrupt_task(worker)
+
+    async def _run_interrupt_queue(
+        self, session_key: str, queue: asyncio.Queue
+    ) -> None:
+        try:
+            while not queue.empty():
+                action_id, bound_session_key, chat_id, owner_id = queue.get_nowait()
+                accepted = False
+                reason = "rejected"
+                handler = getattr(self, "_interrupt_inbound_handler", None)
+                if handler is None:
+                    reason = "handler_unavailable"
+                else:
+                    try:
+                        accepted = bool(
+                            await asyncio.wait_for(
+                                handler(bound_session_key, chat_id, owner_id),
+                                timeout=_INTERRUPT_HANDLER_TIMEOUT_S,
+                            )
+                        )
+                        reason = "accepted" if accepted else "rejected"
+                    except asyncio.TimeoutError:
+                        reason = "handler_timeout"
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.error(
+                            "relay interrupt handler failed reason=internal_error type=%s",
+                            type(exc).__name__,
+                        )
+                        reason = "internal_error"
+                try:
+                    await self._send_interrupt_result(action_id, accepted, reason)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "relay interrupt result send failed type=%s",
+                        type(exc).__name__,
+                    )
+                finally:
+                    queue.task_done()
+        finally:
+            if self._interrupt_queues.get(session_key) is queue:
+                self._interrupt_queues.pop(session_key, None)
+            current = asyncio.current_task()
+            if self._interrupt_workers.get(session_key) is current:
+                self._interrupt_workers.pop(session_key, None)
+
+    async def _cancel_interrupt_tasks(self) -> None:
+        self._ensure_interrupt_state()
+        tasks = [task for task in self._interrupt_tasks if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._interrupt_tasks.clear()
+        self._interrupt_workers.clear()
+        self._interrupt_queues.clear()
+        self._interrupt_actions.clear()
 
     def set_interrupt_inbound_handler(self, handler: Any) -> None:
         """Register the callback for connector->gateway interrupt_inbound frames."""

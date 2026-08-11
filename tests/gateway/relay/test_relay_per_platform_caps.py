@@ -29,7 +29,11 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from gateway.relay.descriptor import (
+    CONTRACT_VERSION,
+    OWNER_BOUND_INTERRUPT_ACK_CAPABILITY,
+    CapabilityDescriptor,
+)
 from gateway.session import SessionSource
 
 from tests.gateway.relay.stub_connector import StubConnector
@@ -46,6 +50,7 @@ def _descriptor(platform: str, max_len: int, len_unit: str = "chars") -> Capabil
         supports_threads=False,
         markdown_dialect="plain",
         len_unit=len_unit,
+        capabilities=(OWNER_BOUND_INTERRUPT_ACK_CAPABILITY,),
     )
 
 
@@ -153,5 +158,4 @@ async def test_adapter_resolves_per_chat_limits_from_inbound_platform():
 
 
 # ───────────────────── stream consumer integration ─────────────────────
-
 

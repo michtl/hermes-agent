@@ -35,7 +35,8 @@ from dataclasses import asdict, dataclass
 
 # Bump additively (never reinterpret an existing field) during the experimental
 # phase; a breaking change requires updating both repos in lockstep.
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
+OWNER_BOUND_INTERRUPT_ACK_CAPABILITY = "owner-bound-interrupt-ack"
 
 
 @dataclass(frozen=True)
@@ -85,10 +86,14 @@ class CapabilityDescriptor:
     # connector's sender for this platform actually implements (e.g.
     # ["send", "edit", "typing", "follow_up", "get_chat_info"]). Empty tuple =
     # the connector predates the field; callers MUST treat that as "legacy op
-    # set" (send/edit/typing/follow_up) rather than "nothing supported", so an
-    # old connector keeps working unchanged. Additive within contract_version 1.
+    # set" (send/edit/typing/follow_up) rather than "nothing supported".
+    # Legacy operation discovery predates v2 Stop acknowledgements and remains
+    # additive within contract version 1.
     # Stored as a tuple so the frozen dataclass stays hashable/immutable.
     supported_ops: tuple = ()
+    # Fail-closed control-plane negotiation. There is intentionally no legacy
+    # fallback: a Stop is safe only when both peers support correlated results.
+    capabilities: tuple = ()
 
     # The op set every connector supported before ``supported_ops`` existed.
     # Used as the assumed capability set when a legacy connector sends no list.
@@ -107,6 +112,9 @@ class CapabilityDescriptor:
         if not self.supported_ops:
             return op in self.LEGACY_OPS
         return op in self.supported_ops
+
+    def supports_capability(self, capability: str) -> bool:
+        return capability in self.capabilities
 
     def to_json(self) -> str:
         """Serialize to a compact, stable JSON string for the handshake frame."""
@@ -149,6 +157,16 @@ class CapabilityDescriptor:
                 )
             else:
                 filtered["supported_ops"] = ()
+        if "capabilities" in filtered:
+            raw_capabilities = filtered["capabilities"]
+            if isinstance(raw_capabilities, (list, tuple)):
+                filtered["capabilities"] = tuple(
+                    capability
+                    for capability in raw_capabilities
+                    if isinstance(capability, str) and capability
+                )
+            else:
+                filtered["capabilities"] = ()
         return cls(**filtered)
 
     @classmethod

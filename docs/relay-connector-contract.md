@@ -1,4 +1,4 @@
-# Relay ↔ Connector Contract (v1, EXPERIMENTAL)
+# Relay ↔ Connector Contract (v2, EXPERIMENTAL)
 
 > **Status:** EXPERIMENTAL. This contract MAY CHANGE without a deprecation
 > cycle until at least two real Class-1 platforms (Discord + Telegram) have
@@ -20,16 +20,23 @@ connector owns all platform-specific socket/identity logic.
 
 ## 1. Handshake
 
-1. Gateway opens the transport (`connect`).
-2. Gateway calls `handshake()`; connector returns a `CapabilityDescriptor`
+1. Gateway opens the transport (`connect`) and sends `hello` with
+   `contract_version: 2`, capability `owner-bound-interrupt-ack`, and an opaque
+   process-lifetime `runtime_epoch` (stable across reconnects, renewed after a
+   gateway restart).
+2. Connector fails the handshake closed unless both values are present, then
+   returns a v2 `CapabilityDescriptor` advertising the same capability.
    (section 2) describing the platform this adapter instance fronts.
-3. Gateway configures the adapter from the descriptor (char limit, length unit,
-   draft/edit/thread/markdown capabilities) and registers an inbound handler.
+3. Gateway likewise rejects and closes a v1/capability-less descriptor;
+   otherwise it configures the adapter from the descriptor (char limit, length
+   unit, draft/edit/thread/markdown capabilities) and registers an inbound
+   handler.
 4. Connector then streams inbound events and accepts outbound actions.
 
-`contract_version` (currently `1`) is carried in the descriptor. The gateway
+`contract_version` (currently `2`) is carried in both directions. The gateway
 ignores unknown descriptor fields (forward-compat) and fills missing optional
-fields from defaults.
+fields from defaults. v1 peers MUST NOT enable the Stop UI: v2 changes Stop
+completion from write-accepted to correlated runtime acknowledgement.
 
 ---
 
@@ -55,6 +62,7 @@ JSON object. Source of truth: `gateway/relay/descriptor.py`.
 | `supports_inchannel_continuable` | bool | no | Whether the platform can host a **flat continuable cron surface** (native Slack's `cron_continuable_surface: in_channel`): the brief posts top-level in the channel/DM and a plain reply continues the job via the flat `(platform, chat_id, None)` session. Default false ⇒ the gateway's scheduler fails safe to thread mode (D6 gate), so an older connector keeps today's thread behavior. |
 | `supports_block_formatting` | bool | no | Whether this platform's sender renders **block-level formatting** from raw markdown when the gateway stamps `metadata.format_hints` on `send`/`edit` frames (Slack: native `markdown` block for tables/lists/code, mrkdwn text kept as fallback). Default false ⇒ the gateway never stamps hints, so an older connector never receives the metadata. |
 | `supported_ops` | string[] | no | Op-level capability discovery: the outbound op names the connector's sender for this platform actually implements (e.g. `["send", "edit", "typing", "follow_up", "get_chat_info"]`). Absent/empty ⇒ the connector predates the field and the gateway assumes the legacy op set (`send`/`edit`/`typing`/`follow_up`); a NEW op is used only when explicitly advertised. |
+| `capabilities` | string[] | no | Control-plane capabilities. v2 Stop requires `owner-bound-interrupt-ack`; absence is fail-closed and has no optimistic fallback. |
 
 Most fields are a projection of the gateway's existing `PlatformEntry`; the
 runtime-only fields (`len_unit`, `supports_*`, `markdown_dialect`) come from the
@@ -96,8 +104,13 @@ HTTP call.
 Frames (connector → gateway, over the WS):
 
 - `{"type":"inbound", "event": <MessageEvent>, "bufferId"?}`
-- `{"type":"interrupt_inbound", "session_key", "chat_id"}` (§5)
+- `{"type":"interrupt_inbound", "session_key", "chat_id", "owner_id", "action_id"}` (§5)
 - `{"type":"passthrough_forward", "forward": <PassthroughForward>, "bufferId"?}` (§5.1)
+
+The correlated response travels in the opposite direction (gateway →
+connector):
+
+- `{"type":"interrupt_result", "action_id", "accepted", "reason"}` (§5)
 
 **Channel context on inbound (design relay-channel-context).** When the source
 platform's descriptor advertised `supports_context` (§2) and the chat is
@@ -454,7 +467,9 @@ from a sibling's. `style` maps per-platform
 (primary/success/danger/secondary). `timeout_s` is advisory on the wire —
 expiry is enforced GATEWAY-side (the pending-prompt registry drops expired
 entries; the owning gateway then replies with a short "no longer waiting"
-notice).
+notice; a stale structured press is consumed without becoming command text,
+while a genuinely typed command with no `prompt_response` field keeps the
+ordinary command path).
 
 **`prompt_response` (Phase 3 inbound).** The user's press crosses back as a
 normal inbound MessageEvent carrying
@@ -479,6 +494,13 @@ ack is `DEFERRED_UPDATE` so no visible "thinking…" reply). Foreign
 callback payloads (another integration's buttons) never become prompt
 events: Telegram/Slack/WhatsApp drop them at the connector; Discord type-3
 forwards keep the legacy custom_id-as-text shape.
+
+Field presence is the control boundary. If `prompt_response` is present but
+has the wrong wire type (`string`, `list`, number, or `null`), or lacks required
+ids, the gateway consumes it terminally and never dispatches its command-shaped
+`text`. If the field is absent, a typed `/c1` remains an ordinary command.
+Durable redelivery of the same `bufferId` repeats the post-consumption
+`inbound_ack`; it does not resurrect the prompt or execute the text lane.
 
 **`react` (Phase 3 ack lifecycle).** Adds/removes the bot's own `emoji`
 reaction on `message_id` — restoring the native adapters' 👀→✅/❌
@@ -563,12 +585,55 @@ gateway holds zero capability material). Source of truth:
 - **Gateway → connector:** `send_interrupt(session_key, reason?)` egresses a
   mid-turn `/stop` over the outbound WS. The connector MUST forward it to the
   gateway instance running that `session_key` (the routing invariant).
-- **Connector → gateway:** an inbound interrupt for a `session_key` is delivered
-  as an `interrupt_inbound` frame down the gateway's outbound WS (§3 transport
-  note) — routed cross-instance via the relay bus to whichever instance holds
-  the socket — and bridged by the adapter's `on_interrupt(session_key, chat_id)`
-  into the existing per-session interrupt mechanism, cancelling exactly that turn
-  (siblings untouched).
+- **Connector → gateway:** a Stop is
+  `interrupt_inbound {session_key, chat_id, owner_id, action_id}`. `owner_id`
+  is minted once with the original inbound turn and remains byte-identical
+  across durable retry/reconnect. `action_id` correlates exactly one attempt.
+- **Gateway → connector result:** after the generation-bound canonical hard
+  stop finishes, the gateway sends
+  `interrupt_result {action_id, accepted:true, reason:"accepted"}`. Validation
+  failures before owner/generation admission return `accepted:false` with a
+  bounded reason. Once that exact Stop has synchronously applied hard interrupt
+  and generation invalidation, it remains terminally accepted even if the
+  caller's timeout/cancellation lands during bounded reaping or task unwind;
+  this prevents a half-applied Stop from being rendered as safely retryable.
+  Raw exception text and frame content never appear in the result or reason log.
+
+The connector MUST clear `activeTurnId`/render Stop success only for the exact
+matching `action_id` with `accepted:true`. A NACK, local timeout, or disconnect
+keeps the same `owner_id` retryable; a late/duplicate result is inert. Repeated
+delivery of the same `action_id` is idempotent: at most one hard stop and one
+result frame. If an accepted result is lost with a transient socket close, the
+same live gateway runtime keeps a bounded terminal-owner cache: a fresh action
+for that exact owner is accepted idempotently without running hard-stop twice.
+A gateway restart clears that cache and changes `runtime_epoch`, causing the
+connector to reconcile the phantom owner instead. Distinct actions for one
+`session_key` are serialized, while the reader continues consuming
+`outbound_result` and durable inbound traffic.
+
+The gateway binds owner plus run generation before slow turn preparation and
+maps the adapter key to the exact multiplexed profile runner key. Stop is
+accepted only when session key, chat id, owner, and generation all match;
+siblings and replacement generations are untouched. The canonical hard-stop
+waits for its existing child-process reaper before releasing a queued handoff,
+so a replacement generation cannot cause an abandoned child to escape reaping.
+
+**Pending-before-Stop semantics.** A follow-up already pending when canonical
+Stop begins is consumed and discarded, matching `/stop`. A message arriving
+after that discard while Stop/cancellation is still in progress remains queued,
+is rebound to its own owner/generation, and starts only after the reaper and old
+task complete.
+
+**Rollout / legacy ledger gate.** Disable Relay admission, deploy both v2 peers,
+then start the connector before the gateway and re-enable admission only after
+the v2 handshake. Never serve traffic with a mixed v1/v2 pair. Before enabling
+Relay, inspect durable
+`pending`/`inflight` user-message rows. Rows written by v1 have no `owner_id`
+and MUST be drained by the old pair or explicitly handled by an operator.
+The v2 connector performs a read-only health/handshake check and refuses Relay
+activation while any such row remains; it never dead-letters it merely for
+being legacy and never fabricates an owner. Health reports
+`legacy_owner_drain_required` plus the blocking count.
 
 Both directions ride the gateway's outbound WS: the gateway→connector `/stop`
 egresses over it, and the connector→gateway interrupt rides the same `inbound`

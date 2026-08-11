@@ -2765,6 +2765,10 @@ from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.turn_context import TurnContext
+from gateway.interrupt_budget import (
+    HARD_STOP_REAP_TIMEOUT_SECONDS,
+    INTERRUPT_ACTIVITY_TIMEOUT_SECONDS,
+)
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
@@ -3342,6 +3346,8 @@ def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
 
 
 _INTERRUPT_REASON_STOP = "Stop requested"
+_INTERRUPT_REAP_TIMEOUT_SECONDS = HARD_STOP_REAP_TIMEOUT_SECONDS
+_INTERRUPT_ACTIVITY_TIMEOUT_SECONDS = INTERRUPT_ACTIVITY_TIMEOUT_SECONDS
 _INTERRUPT_REASON_RESET = "Session reset requested"
 _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
 _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
@@ -13325,6 +13331,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            _set_session_interrupt = getattr(
+                adapter, "set_session_interrupt_handler", None
+            )
+            if callable(_set_session_interrupt):
+                _set_session_interrupt(self._handle_adapter_session_interrupt)
             _set_reaction = getattr(adapter, "set_reaction_handler", None)
             if callable(_set_reaction):
                 _set_reaction(self._handle_reaction_event)
@@ -15129,6 +15140,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    _set_session_interrupt = getattr(
+                        adapter, "set_session_interrupt_handler", None
+                    )
+                    if callable(_set_session_interrupt):
+                        _set_session_interrupt(self._handle_adapter_session_interrupt)
                     _set_reaction = getattr(adapter, "set_reaction_handler", None)
                     if callable(_set_reaction):
                         _set_reaction(self._handle_reaction_event)
@@ -16233,6 +16249,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter.set_busy_session_handler(
             self._make_profile_busy_session_handler(profile_name)
         )
+        _set_session_interrupt = getattr(
+            adapter, "set_session_interrupt_handler", None
+        )
+        if callable(_set_session_interrupt):
+            _set_session_interrupt(self._handle_adapter_session_interrupt)
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)
@@ -18910,6 +18931,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _claim_state.turn.started_ts = time.time()
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
+        # The adapter guard already exists before this handler starts. Bind the
+        # runner generation immediately, before the slow session/media/hook
+        # preparation awaits inside _handle_message_with_agent.
+        self._bind_adapter_run_generation_for_source(
+            source, _quick_key, _run_generation
+        )
 
         try:
             try:
@@ -21234,10 +21261,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
         # same run that registered them.
-        self._bind_adapter_run_generation(
-            self._adapter_for_source(source),
-            session_key,
-            run_generation,
+        self._bind_adapter_run_generation_for_source(
+            source, _quick_key, run_generation
         )
 
         try:
@@ -22552,7 +22577,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("goal continuation: status send failed: %s", exc, exc_info=True)
 
         try:
-            session_key = self._session_key_for_source(source)
+            adapter_key_for_source = getattr(adapter, "session_key_for_source", None)
+            session_key = (
+                adapter_key_for_source(source)
+                if callable(adapter_key_for_source)
+                else self._session_key_for_source(source)
+            )
         except Exception:
             session_key = None
 
@@ -27732,18 +27762,102 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _bind_adapter_run_generation(
         self,
         adapter: Any,
-        session_key: str,
+        adapter_session_key: str,
         generation: int | None,
+        *,
+        runner_session_key: str | None = None,
     ) -> None:
         """Bind a gateway run generation to the adapter's active-session event."""
-        if not adapter or not session_key or generation is None:
+        if not adapter or not adapter_session_key or generation is None:
             return
         try:
-            interrupt_event = getattr(adapter, "_active_sessions", {}).get(session_key)
+            interrupt_event = getattr(adapter, "_active_sessions", {}).get(
+                adapter_session_key
+            )
             if interrupt_event is not None:
                 setattr(interrupt_event, "_hermes_run_generation", int(generation))
+                setattr(
+                    interrupt_event,
+                    "_hermes_runner_session_key",
+                    runner_session_key or adapter_session_key,
+                )
         except Exception:
             pass
+
+    def _bind_adapter_run_generation_for_source(
+        self,
+        source: SessionSource,
+        runner_session_key: str,
+        generation: int | None,
+    ) -> None:
+        """Bind Store generation through the adapter's authoritative key map."""
+        adapter = self._adapter_for_source(source)
+        if adapter is None:
+            return
+        try:
+            adapter_session_key = adapter.session_key_for_source(source)
+        except Exception:
+            logger.info(
+                "Could not resolve adapter session key for runner session %s",
+                runner_session_key,
+            )
+            return
+        self._bind_adapter_run_generation(
+            adapter,
+            adapter_session_key,
+            generation,
+            runner_session_key=runner_session_key,
+        )
+
+    async def _handle_adapter_session_interrupt(
+        self,
+        session_key: str,
+        source: SessionSource,
+        owner_id: str,
+        run_generation: int,
+    ) -> bool:
+        """Route a generation-bound adapter stop through the canonical hard stop."""
+        if (
+            not session_key
+            or source is None
+            or not owner_id
+            or not isinstance(run_generation, int)
+            or isinstance(run_generation, bool)
+            or run_generation < 1
+        ):
+            return False
+        adapter = self._adapter_for_source(source)
+        if adapter is None:
+            return False
+        try:
+            expected_session_key = adapter.session_key_for_source(source)
+        except Exception:
+            return False
+        if expected_session_key != session_key:
+            return False
+
+        guard = getattr(adapter, "_active_sessions", {}).get(session_key)
+        runner_session_key = getattr(
+            guard, "_hermes_runner_session_key", None
+        ) if guard is not None else None
+        if (
+            guard is None
+            or getattr(guard, "_hermes_owner_id", None) != owner_id
+            or getattr(guard, "_hermes_run_generation", None) != run_generation
+            or not isinstance(runner_session_key, str)
+            or not runner_session_key
+            or not self._is_session_run_current(runner_session_key, run_generation)
+        ):
+            return False
+
+        await self._interrupt_and_clear_session(
+            runner_session_key,
+            source,
+            interrupt_reason=_INTERRUPT_REASON_STOP,
+            invalidation_reason="relay_owner_interrupt",
+            adapter_session_key=session_key,
+        )
+        return True
 
     async def _interrupt_and_clear_session(
         self,
@@ -27753,6 +27867,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         interrupt_reason: str,
         invalidation_reason: str,
         release_running_state: bool = True,
+        adapter_session_key: str | None = None,
     ) -> None:
         """Interrupt the current run and clear queued session state consistently."""
         if not session_key:
@@ -27769,65 +27884,152 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _process_baseline = getattr(
                 running_agent, "_gateway_turn_process_baseline", None
             )
-        # Bump the generation *before* scheduling the reap thread and capture
-        # the post-bump value: task_id is session-scoped (task_id ==
-        # session_id), so if a replacement turn claims this session and
-        # spawns its own process before the reap thread actually runs, that
-        # claim bumps the generation again. The closure below then sees a
-        # stale generation and skips — the replacement turn's own baseline
-        # covers its own cleanup, so nothing is left permanently unreaped.
+        adapter = self._adapter_for_source(source)
+        # Invalidate before reaping, then hold the canonical hard-stop at a
+        # completion barrier. task_id is session-scoped, so allowing a fresh
+        # turn to claim a generation before this reaper snapshots/kills would
+        # force an unsafe choice between skipping the abandoned child and
+        # killing the replacement turn's child. The adapter handoff happens
+        # only after this one existing reaper finishes; kill policy remains
+        # centralized in _reap_gateway_turn_processes.
         _generation_at_interrupt = self._invalidate_session_run_generation(
             session_key, reason=invalidation_reason
         )
-        if _process_task_id and _process_baseline is not None:
-            threading.Thread(
-                target=_reap_gateway_turn_processes,
-                args=(_process_task_id, _process_baseline),
-                kwargs={
-                    "source": "gateway_turn_interrupt",
-                    "is_still_current": lambda: self._is_session_run_current(
-                        session_key, _generation_at_interrupt
-                    ),
-                },
-                name=f"gateway-turn-reaper-{_process_task_id[:12]}",
-                daemon=True,
-            ).start()
-        adapter = self._adapter_for_source(source)
-        interrupt_session_activity = getattr(
-            type(adapter), "interrupt_session_activity", None
-        )
-        if adapter and callable(interrupt_session_activity):
-            metadata = self._thread_metadata_for_source(source)
-            try:
-                params = inspect.signature(interrupt_session_activity).parameters
-                accepts_metadata = "metadata" in params or any(
-                    param.kind is inspect.Parameter.VAR_KEYWORD
-                    for param in params.values()
+        _handoff_ready = None
+        try:
+            if _process_task_id and _process_baseline is not None:
+                _reap_done = threading.Event()
+                _handoff_ready = threading.Event()
+                _adapter_key = adapter_session_key or session_key
+                _adapter_guard = (
+                    getattr(adapter, "_active_sessions", {}).get(_adapter_key)
+                    if adapter is not None
+                    else None
                 )
-            except (TypeError, ValueError):
-                accepts_metadata = False
-            if accepts_metadata:
-                await adapter.interrupt_session_activity(
-                    session_key, source.chat_id, metadata=metadata
-                )
-            else:
-                await adapter.interrupt_session_activity(session_key, source.chat_id)
-        if adapter and hasattr(adapter, "get_pending_message"):
-            adapter.get_pending_message(session_key)  # consume and discard
-        if _iac_state is not None:
-            _iac_state.persistent.pending_command_text = None
-        if release_running_state:
-            self._release_running_agent_state(session_key)
-            # Evict the cached agent: ``_interrupt_requested`` is only
-            # cleared by the turn finalizer, so on a hung or still-draining
-            # run the flag survives the lock release and kills the session's
-            # NEXT message at the top of the tool loop (interrupted=True,
-            # api_calls=0, empty response — silently swallowed, #44212).
-            # Evicting mirrors the /new and /model paths: the next message
-            # rebuilds the agent from session history, while the old agent
-            # object keeps its interrupt flag so a hung drain still dies
-            # when it unblocks.
-            self._evict_cached_agent(session_key)
+                if _adapter_guard is not None:
+                    setattr(
+                        _adapter_guard,
+                        "_hermes_hard_stop_reap_barrier",
+                        _handoff_ready,
+                    )
+
+                def _reap_interrupted_turn() -> None:
+                    try:
+                        _reap_gateway_turn_processes(
+                            _process_task_id,
+                            _process_baseline,
+                            source="gateway_turn_interrupt",
+                            # Adapter handoff is held by the barrier. This
+                            # generation guard additionally protects a
+                            # non-adapter parallel turn that can claim the
+                            # same runner key while the reaper thread is queued.
+                            is_still_current=lambda: self._is_session_run_current(
+                                session_key, _generation_at_interrupt
+                            ),
+                        )
+                    finally:
+                        _reap_done.set()
+
+                threading.Thread(
+                    target=_reap_interrupted_turn,
+                    name=f"gateway-turn-reaper-{_process_task_id[:12]}",
+                    daemon=True,
+                ).start()
+                try:
+                    reaped = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            _reap_done.wait,
+                            _INTERRUPT_REAP_TIMEOUT_SECONDS,
+                        ),
+                        timeout=_INTERRUPT_REAP_TIMEOUT_SECONDS + 0.1,
+                    )
+                except asyncio.TimeoutError:
+                    reaped = False
+                if not reaped:
+                    logger.warning(
+                        "Hard-stop process reap exceeded %.1fs; continuing "
+                        "terminal Stop cleanup under the generation guard",
+                        _INTERRUPT_REAP_TIMEOUT_SECONDS,
+                    )
+            interrupt_session_activity = getattr(
+                type(adapter), "interrupt_session_activity", None
+            )
+            if adapter and callable(interrupt_session_activity):
+                metadata = self._thread_metadata_for_source(source)
+                try:
+                    params = inspect.signature(interrupt_session_activity).parameters
+                    accepts_metadata = "metadata" in params or any(
+                        param.kind is inspect.Parameter.VAR_KEYWORD
+                        for param in params.values()
+                    )
+                except (TypeError, ValueError):
+                    accepts_metadata = False
+                if accepts_metadata:
+                    _interrupt_activity = adapter.interrupt_session_activity(
+                        adapter_session_key or session_key,
+                        source.chat_id,
+                        metadata=metadata,
+                    )
+                else:
+                    _interrupt_activity = adapter.interrupt_session_activity(
+                        adapter_session_key or session_key, source.chat_id
+                    )
+                try:
+                    await asyncio.wait_for(
+                        _interrupt_activity,
+                        timeout=_INTERRUPT_ACTIVITY_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Timed out stopping adapter session activity; continuing hard-stop cleanup"
+                    )
+        finally:
+            # From the instant the barrier is installed, every exit path —
+            # success, timeout, CancelledError, or unexpected exception — must
+            # make the guard recoverable. The individual cleanup steps are
+            # isolated so one best-effort failure cannot skip the terminal
+            # running-state release or the barrier signal.
+            if adapter and hasattr(adapter, "get_pending_message"):
+                try:
+                    adapter.get_pending_message(
+                        adapter_session_key or session_key
+                    )  # consume and discard
+                except Exception:
+                    logger.warning(
+                        "Failed to discard pending message during hard-stop cleanup",
+                        exc_info=True,
+                    )
+            if adapter and hasattr(adapter, "_discard_text_debounce"):
+                try:
+                    adapter._discard_text_debounce(adapter_session_key or session_key)
+                except Exception:
+                    logger.warning(
+                        "Failed to discard text debounce during hard-stop cleanup",
+                        exc_info=True,
+                    )
+            if _iac_state is not None:
+                _iac_state.persistent.pending_command_text = None
+            if release_running_state:
+                try:
+                    self._release_running_agent_state(session_key)
+                except Exception:
+                    logger.warning(
+                        "Failed to release running agent state during hard-stop cleanup",
+                        exc_info=True,
+                    )
+                # Evict the cached agent: ``_interrupt_requested`` is only
+                # cleared by the turn finalizer, so on a hung or still-draining
+                # run the flag survives the lock release and kills the session's
+                # NEXT message at the top of the tool loop.
+                try:
+                    self._evict_cached_agent(session_key)
+                except Exception:
+                    logger.warning(
+                        "Failed to evict cached agent during hard-stop cleanup",
+                        exc_info=True,
+                    )
+            if _handoff_ready is not None:
+                _handoff_ready.set()
 
     async def _refresh_agent_cache_message_count(
         self, session_key: str, session_id: Optional[str]

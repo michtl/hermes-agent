@@ -30,6 +30,21 @@ from gateway.relay.descriptor import CapabilityDescriptor
 # Callback the transport invokes for each inbound normalized event.
 InboundHandler = Callable[[MessageEvent], Awaitable[None]]
 
+
+def normalize_owner_id(value: Any) -> Optional[str]:
+    """Return a bounded opaque relay owner id, or ``None`` for invalid input.
+
+    Owner ids are compared byte-for-byte; trimming or stringifying malformed
+    wire values would create aliases and weaken stale-generation protection.
+    """
+    if not isinstance(value, str):
+        return None
+    if not value or value != value.strip() or len(value) > 256:
+        return None
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        return None
+    return value
+
 # Callback the transport invokes for each forwarded passthrough request (§5.1).
 # The first arg is a PassthroughForward (gateway/relay/ws_transport.py) — typed
 # as Any here to keep this protocol module free of a concrete-transport import

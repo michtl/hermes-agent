@@ -260,10 +260,14 @@ async def test_late_arrival_drain_still_fires_when_no_in_band_drain():
 
     results: list[str] = []
     original_stop_typing = getattr(adapter, "stop_typing", None)
+    injected_late_arrival = False
 
     async def injecting_stop_typing(chat_id):
+        nonlocal injected_late_arrival
         # Simulate a message landing during the cleanup awaits.
-        adapter._pending_messages[sk] = _make_event(text="late")
+        if not injected_late_arrival:
+            injected_late_arrival = True
+            adapter._pending_messages[sk] = _make_event(text="late")
         if original_stop_typing:
             await original_stop_typing(chat_id)
 

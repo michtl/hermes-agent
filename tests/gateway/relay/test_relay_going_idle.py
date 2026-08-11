@@ -15,6 +15,10 @@ import json
 import pytest
 import pytest_asyncio
 
+from gateway.relay.descriptor import (
+    CONTRACT_VERSION,
+    OWNER_BOUND_INTERRUPT_ACK_CAPABILITY,
+)
 from gateway.relay.ws_transport import WebSocketRelayTransport, WEBSOCKETS_AVAILABLE
 
 pytestmark = pytest.mark.skipif(not WEBSOCKETS_AVAILABLE, reason="websockets not installed")
@@ -24,7 +28,7 @@ if WEBSOCKETS_AVAILABLE:
 
 
 DESCRIPTOR = {
-    "contract_version": 1,
+    "contract_version": CONTRACT_VERSION,
     "platform": "discord",
     "label": "Discord",
     "max_message_length": 2000,
@@ -33,6 +37,7 @@ DESCRIPTOR = {
     "supports_threads": True,
     "markdown_dialect": "discord",
     "len_unit": "chars",
+    "capabilities": [OWNER_BOUND_INTERRUPT_ACK_CAPABILITY],
 }
 
 
@@ -260,5 +265,4 @@ async def test_adapter_go_dormant_delegates_to_transport(server):
         assert transport._dormant is True
     finally:
         await adapter.disconnect()
-
 

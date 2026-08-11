@@ -8,8 +8,8 @@ Covers:
     triggers run.py's text fallback);
   - the pending-prompt registry: mint → consume-once → expiry;
   - _consume_prompt_response routes answers to the approval / slash-confirm /
-    clarify resolvers and CONSUMES the event; unknown/expired ids fall
-    through to normal dispatch;
+    clarify resolvers and CONSUMES every structured frame; duplicate, expired,
+    and unknown ids never fall through as command-shaped text;
   - the Discord type-3 hp1 decode (structured prompt_response replacing the
     bare-custom_id stub; foreign custom_ids keep the legacy text shape);
   - on_processing_start/complete drive react ops (👀 → ✅/❌), op-gated and
@@ -19,6 +19,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import Any, Dict, Optional
 
@@ -28,6 +29,7 @@ from gateway.config import PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from gateway.relay.ws_transport import WebSocketRelayTransport
 from gateway.session import SessionSource
 
 from tests.gateway.relay.stub_connector import StubConnector
@@ -197,6 +199,168 @@ async def test_prompt_response_resolves_clarify_choice_and_other(monkeypatch):
     assert marked == ["cl-10"]
 
 
+@pytest.mark.asyncio
+async def test_structured_prompt_duplicates_expired_and_unknown_never_dispatch(monkeypatch):
+    adapter, stub = _adapter()
+    await adapter.send_clarify("c1", "Which?", ["alpha"], "cl-11", "s")
+    prompt_id = stub.sent[-1]["prompt_id"]
+
+    resolved: list[tuple[str, str]] = []
+    dispatched: list[MessageEvent] = []
+
+    monkeypatch.setattr(
+        "tools.clarify_gateway.resolve_gateway_clarify",
+        lambda cid, resp: resolved.append((cid, resp)) or True,
+    )
+
+    async def capture_dispatch(event):
+        dispatched.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", capture_dispatch)
+
+    # First delivery resolves the prompt; a durable redelivery before ACK is a
+    # duplicate and must remain a structured control frame, never a /c0 command.
+    duplicate = _event({"prompt_id": prompt_id, "option_id": "c0"}, text="/c0")
+    await adapter._on_inbound(duplicate)
+    await adapter._on_inbound(duplicate)
+
+    expired_id = adapter._mint_prompt(
+        "clarify",
+        {
+            "session_key": "s",
+            "clarify_id": "cl-expired",
+            "choices": ["alpha"],
+            "chat_id": "c1",
+        },
+        timeout_s=-1,
+    )
+    await adapter._on_inbound(
+        _event({"prompt_id": expired_id, "option_id": "c0"}, text="/c0")
+    )
+    await adapter._on_inbound(
+        _event({"prompt_id": "unknown", "option_id": "c0"}, text="/c0")
+    )
+
+    assert resolved == [("cl-11", "alpha")]
+    assert dispatched == []
+
+
+@pytest.mark.asyncio
+async def test_ws_prompt_redelivery_with_same_buffer_id_is_consumed_once_and_reacked(
+    monkeypatch,
+):
+    adapter, stub = _adapter()
+    await adapter.send_clarify("c1", "Which?", ["alpha"], "cl-ws", "s")
+    prompt_id = stub.sent[-1]["prompt_id"]
+    resolved: list[tuple[str, str]] = []
+    dispatched: list[MessageEvent] = []
+
+    monkeypatch.setattr(
+        "tools.clarify_gateway.resolve_gateway_clarify",
+        lambda cid, resp: resolved.append((cid, resp)) or True,
+    )
+
+    async def capture_dispatch(event):
+        dispatched.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", capture_dispatch)
+
+    transport = object.__new__(WebSocketRelayTransport)
+    transport._inbound = adapter._on_inbound
+    ack_attempts: list[str] = []
+    committed_acks: list[str] = []
+
+    async def lose_first_ack(buffer_id: str) -> None:
+        ack_attempts.append(buffer_id)
+        if len(ack_attempts) > 1:
+            committed_acks.append(buffer_id)
+
+    transport._send_inbound_ack = lose_first_ack
+    frame = json.dumps(
+        {
+            "type": "inbound",
+            "bufferId": "buf-prompt-1",
+            "event": {
+                "text": "/c0",
+                "message_type": "command",
+                "source": {
+                    "platform": "telegram",
+                    "chat_id": "c1",
+                    "chat_type": "dm",
+                    "user_id": "u1",
+                },
+                "prompt_response": {"prompt_id": prompt_id, "option_id": "c0"},
+            },
+        }
+    )
+
+    await transport._handle_frame(frame)
+    await transport._handle_frame(frame)
+
+    assert resolved == [("cl-ws", "alpha")]
+    assert dispatched == []
+    assert ack_attempts == ["buf-prompt-1", "buf-prompt-1"]
+    assert committed_acks == ["buf-prompt-1"]
+
+
+@pytest.mark.asyncio
+async def test_ws_malformed_prompt_dict_is_terminally_consumed(monkeypatch):
+    adapter, _stub = _adapter()
+    dispatched: list[MessageEvent] = []
+
+    async def capture_dispatch(event):
+        dispatched.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", capture_dispatch)
+    transport = object.__new__(WebSocketRelayTransport)
+    transport._inbound = adapter._on_inbound
+    acked: list[str] = []
+
+    async def capture_ack(buffer_id: str) -> None:
+        acked.append(buffer_id)
+
+    transport._send_inbound_ack = capture_ack
+
+    await transport._handle_frame(
+        json.dumps(
+            {
+                "type": "inbound",
+                "bufferId": "buf-malformed-prompt",
+                "event": {
+                    "text": "/c0",
+                    "message_type": "command",
+                    "source": {
+                        "platform": "telegram",
+                        "chat_id": "c1",
+                        "chat_type": "dm",
+                        "user_id": "u1",
+                    },
+                    "prompt_response": {},
+                },
+            }
+        )
+    )
+
+    assert dispatched == []
+    assert acked == ["buf-malformed-prompt"]
+
+
+@pytest.mark.asyncio
+async def test_typed_command_without_prompt_response_still_dispatches(monkeypatch):
+    adapter, _stub = _adapter()
+    dispatched: list[MessageEvent] = []
+
+    async def capture_dispatch(event):
+        dispatched.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", capture_dispatch)
+    typed = _event(prompt_response=None, text="/c0")
+
+    await adapter._on_inbound(typed)
+
+    assert dispatched == [typed]
+
+
 # ── Discord type-3 hp1 decode ────────────────────────────────────────────
 
 
@@ -360,3 +524,43 @@ def test_minted_prompt_ids_are_instance_scoped_and_callback_safe():
     # A legacy id minted before the nonce existed (no "." segment) is still
     # treated as ours, so a prompt in flight across an upgrade resolves.
     assert a._minted_here("a1b2c3d4") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("malformed", ["bad", [], 7, None])
+async def test_ws_non_object_prompt_field_is_terminally_consumed_and_acked(
+    monkeypatch, malformed
+):
+    adapter, _stub = _adapter()
+    dispatched: list[MessageEvent] = []
+
+    async def capture_dispatch(event):
+        dispatched.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", capture_dispatch)
+    transport = object.__new__(WebSocketRelayTransport)
+    transport._inbound = adapter._on_inbound
+    acked: list[str] = []
+
+    async def capture_ack(buffer_id: str) -> None:
+        acked.append(buffer_id)
+
+    transport._send_inbound_ack = capture_ack
+    await transport._handle_frame(json.dumps({
+        "type": "inbound",
+        "bufferId": "buf-malformed-prompt-shape",
+        "event": {
+            "text": "/c1",
+            "message_type": "command",
+            "source": {
+                "platform": "telegram",
+                "chat_id": "c1",
+                "chat_type": "dm",
+                "user_id": "u1",
+            },
+            "prompt_response": malformed,
+        },
+    }))
+
+    assert dispatched == []
+    assert acked == ["buf-malformed-prompt-shape"]

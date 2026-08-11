@@ -23,6 +23,10 @@ import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from gateway.interrupt_budget import (
+    SESSION_HANDOFF_BARRIER_TIMEOUT_SECONDS,
+    SESSION_PROCESSING_CANCEL_TIMEOUT_SECONDS,
+)
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
@@ -2478,7 +2482,7 @@ class MessageEvent:
     # clarify resolvers) BEFORE normal dispatch; native adapters never set it
     # (their button callbacks resolve in-process).
     prompt_response: Optional[Dict[str, Any]] = None
-    
+
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.
     auto_skill: Optional[str | list[str]] = None
@@ -2512,6 +2516,17 @@ class MessageEvent:
     # Proactive plugin events set this to False so untrusted payload text
     # remains conversational input.
     allow_gateway_control: bool = True
+    # Opaque relay turn-owner identity. Appended after the established event
+    # fields to preserve MessageEvent's legacy positional-call compatibility.
+    # The authenticated relay connector puts the same value on the original
+    # inbound event and a later ``interrupt_inbound`` frame. RelayAdapter binds
+    # it to the active session guard so a delayed stop cannot target a
+    # replacement turn that happens to reuse the same session key. Native
+    # adapters leave it unset.
+    owner_id: Optional[str] = None
+    # Presence is distinct from parsed shape: malformed structured prompt
+    # controls remain terminal and must never become command text.
+    prompt_response_present: bool = False
     
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
@@ -3215,6 +3230,12 @@ class BasePlatformAdapter(ABC):
         # same ``agent:main:`` key (see ``_session_key_profile``). ``None`` on a
         # primary/single-profile adapter, which keeps the legacy namespace.
         self._owner_profile: Optional[str] = None
+        # Optional runtime-owner hard-stop seam. Relay uses this to route a
+        # generation-validated connector interrupt through GatewayRunner's
+        # canonical hard-stop lifecycle before cancelling the adapter monitor.
+        self._session_interrupt_handler: Optional[
+            Callable[[str, SessionSource, str, int], Awaitable[bool]]
+        ] = None
         # Optional authorization check, registered by GatewayRunner. Used by
         # adapters that fetch external context (e.g. Slack thread history) to
         # mark senders not on the allowlist as unverified in LLM context,
@@ -3861,6 +3882,13 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_session_interrupt_handler(
+        self,
+        handler: Optional[Callable[[str, SessionSource, str, int], Awaitable[bool]]],
+    ) -> None:
+        """Install the runtime-owner hard-stop seam used by control transports."""
+        self._session_interrupt_handler = handler
 
     def set_reaction_handler(
         self, handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]]
@@ -6033,6 +6061,62 @@ class BasePlatformAdapter(ABC):
         self._discard_text_debounce(session_key)
         return True
 
+    def session_key_for_source(self, source: SessionSource) -> str:
+        """Return this adapter's authoritative active-session key."""
+        return build_session_key(
+            source,
+            group_sessions_per_user=self.config.extra.get(
+                "group_sessions_per_user", True
+            ),
+            thread_sessions_per_user=self.config.extra.get(
+                "thread_sessions_per_user", False
+            ),
+        )
+
+    @staticmethod
+    def _bind_session_guard_event(guard: asyncio.Event, event: MessageEvent) -> None:
+        """Rebind a reused handoff guard to exactly one inbound turn owner."""
+        for attribute in (
+            "_hermes_owner_id",
+            "_hermes_run_generation",
+            "_hermes_runner_session_key",
+        ):
+            if hasattr(guard, attribute):
+                delattr(guard, attribute)
+        owner_id = getattr(event, "owner_id", None)
+        if isinstance(owner_id, str) and owner_id:
+            setattr(guard, "_hermes_owner_id", owner_id)
+        source = getattr(event, "source", None)
+        if source is not None:
+            setattr(guard, "_hermes_session_source", source)
+
+    @staticmethod
+    async def _wait_session_handoff_barrier(guard: asyncio.Event) -> None:
+        """Hold queued handoff for a bounded canonical hard-stop interval."""
+        barrier = getattr(guard, "_hermes_hard_stop_reap_barrier", None)
+        if barrier is not None and not barrier.is_set():
+            try:
+                completed = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        barrier.wait,
+                        SESSION_HANDOFF_BARRIER_TIMEOUT_SECONDS,
+                    ),
+                    timeout=SESSION_HANDOFF_BARRIER_TIMEOUT_SECONDS + 0.1,
+                )
+            except asyncio.TimeoutError:
+                completed = False
+            if not completed:
+                logger.warning(
+                    "[%s] Hard-stop handoff barrier exceeded %.1fs; "
+                    "discarding the stale barrier so the session can recover",
+                    getattr(guard, "_hermes_adapter_name", "platform"),
+                    SESSION_HANDOFF_BARRIER_TIMEOUT_SECONDS,
+                )
+        if barrier is not None and getattr(
+            guard, "_hermes_hard_stop_reap_barrier", None
+        ) is barrier:
+            delattr(guard, "_hermes_hard_stop_reap_barrier")
+
     def _start_session_processing(
         self,
         event: MessageEvent,
@@ -6048,6 +6132,11 @@ class BasePlatformAdapter(ABC):
         session lock.
         """
         guard = interrupt_event or asyncio.Event()
+        # Bind relay wire ownership before the task starts. The runner later
+        # adds its monotonically increasing run generation to this same guard;
+        # an interrupt must match both values before either lifecycle layer is
+        # allowed to stop the turn.
+        self._bind_session_guard_event(guard, event)
         self._active_sessions[session_key] = guard
 
         task = asyncio.create_task(self._process_message_background(event, session_key))
@@ -6094,14 +6183,19 @@ class BasePlatformAdapter(ABC):
             self._expected_cancelled_tasks.add(task)
             task.cancel()
             try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+                await asyncio.wait_for(
+                    asyncio.shield(task),
+                    timeout=SESSION_PROCESSING_CANCEL_TIMEOUT_SECONDS,
+                )
             except asyncio.CancelledError:
                 pass
             except asyncio.TimeoutError:
                 logger.warning(
-                    "[%s] Cancelled task for %s did not exit within 5s; "
+                    "[%s] Cancelled task for %s did not exit within %.1fs; "
                     "unblocking dispatch and letting the task unwind in the background",
-                    self.name, session_key,
+                    self.name,
+                    session_key,
+                    SESSION_PROCESSING_CANCEL_TIMEOUT_SECONDS,
                 )
             except Exception:
                 logger.debug(
@@ -7025,6 +7119,9 @@ class BasePlatformAdapter(ABC):
             # The active drain owns debounce state. If a queue-mode timer has
             # not fired yet, force-flush into _pending_messages here and let
             # this task hand off the follow-up.
+            _handoff_guard = self._active_sessions.get(session_key)
+            if _handoff_guard is not None:
+                await self._wait_session_handoff_barrier(_handoff_guard)
             await self._flush_text_debounce_now(session_key)
 
             # Check if there's a pending message that was queued during our processing
@@ -7043,7 +7140,10 @@ class BasePlatformAdapter(ABC):
                 _active = self._active_sessions.get(session_key)
                 if _active is not None:
                     _active.clear()
+                    self._bind_session_guard_event(_active, pending_event)
                 await _stop_typing_task()
+                if _active is not None:
+                    await self._wait_session_handoff_barrier(_active)
                 # Spawn a fresh task for the pending message instead of
                 # recursing.  Issue #17758: `await
                 # self._process_message_background(...)` here grew the
@@ -7152,6 +7252,9 @@ class BasePlatformAdapter(ABC):
             )
             # Final drain/release boundary: force-flush any timer that missed
             # the in-band drain before deciding whether the guard can clear.
+            _handoff_guard = self._active_sessions.get(session_key)
+            if _handoff_guard is not None:
+                await self._wait_session_handoff_barrier(_handoff_guard)
             await self._flush_text_debounce_now(session_key)
             # Late-arrival drain: a message may have arrived during the
             # cleanup awaits above (typing_task cancel, stop_typing).  Such
@@ -7185,6 +7288,8 @@ class BasePlatformAdapter(ABC):
                     _active = self._active_sessions.get(session_key)
                     if _active is not None:
                         _active.clear()
+                        self._bind_session_guard_event(_active, late_pending)
+                        await self._wait_session_handoff_barrier(_active)
                     drain_task = asyncio.create_task(
                         self._process_message_background(late_pending, session_key)
                     )
