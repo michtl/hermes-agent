@@ -6358,7 +6358,14 @@ class BasePlatformAdapter(ABC):
         command-scoped guard, then — if a follow-up message landed while the
         command was running — spawns a fresh processing task for it.
         """
+        if self._active_sessions.get(session_key) is not command_guard:
+            return
         await self._flush_text_debounce_now(session_key)
+        # Flushing can yield, so a newer command may have claimed this session
+        # while the old cleanup waited.  That cleanup must not consume the new
+        # command's pending successor or overwrite its guard.
+        if self._active_sessions.get(session_key) is not command_guard:
+            return
         pending_event = self._pending_messages.pop(session_key, None)
         self._release_session_guard(session_key, guard=command_guard)
         if pending_event is None:
@@ -6392,6 +6399,14 @@ class BasePlatformAdapter(ABC):
 
         current_guard = self._active_sessions.get(session_key)
         command_guard = asyncio.Event()
+        # A reset-like command does not become a turn owner, but while it
+        # serializes cancellation it still represents the live owner it
+        # replaced.  Preserve that owner only when it came from the existing
+        # guard; this keeps command-on-command acknowledgements absorbed by A
+        # instead of falsely rejecting B with a null/phantom owner.
+        prior_owner = getattr(current_guard, "_hermes_owner_id", None)
+        if isinstance(prior_owner, str) and prior_owner:
+            setattr(command_guard, "_hermes_owner_id", prior_owner)
         self._active_sessions[session_key] = command_guard
         thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
 
@@ -6427,7 +6442,6 @@ class BasePlatformAdapter(ABC):
             # absorbed by the guard it is about to stop, so the connector can
             # retire B without ever inventing a short-lived owner for it.
             if getattr(event, "owner_id", None) and current_guard is not None:
-                prior_owner = getattr(current_guard, "_hermes_owner_id", None)
                 if isinstance(prior_owner, str) and prior_owner:
                     event.metadata["relay_owner_disposition"] = "absorbed"
                     event.metadata["relay_owner_canonical_id"] = prior_owner

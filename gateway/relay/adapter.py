@@ -1103,9 +1103,9 @@ class RelayAdapter(BasePlatformAdapter):
         canonical_owner = owner_after
         if disposition == "absorbed":
             # Reset-like bypass commands are control traffic for the already
-            # running owner. Their temporary command guard intentionally has
-            # no owner, so preserve the pre-dispatch guard identity rather than
-            # reporting a phantom B or a false terminal rejection.
+            # running owner. Their temporary command guard carries forward
+            # only the authoritative owner from the guard it replaced, so
+            # preserve that identity rather than reporting a phantom B.
             marked_owner = normalize_owner_id(
                 event.metadata.get("relay_owner_canonical_id")
             )
@@ -3508,7 +3508,7 @@ class RelayAdapter(BasePlatformAdapter):
             await self._react(str(chat_id), str(message_id), "👀")
 
     async def on_processing_complete(self, event, outcome) -> None:
-        """Project the terminal reaction, then emit owner-bound completion.
+        """Emit owner-bound completion, then project the terminal reaction.
 
         BasePlatformAdapter invokes this hook after the message handler has
         returned (the runner has flushed transcript/tool/child state) and after
@@ -3524,6 +3524,48 @@ class RelayAdapter(BasePlatformAdapter):
         if not chat_id:
             return
 
+        outcomes = {
+            ProcessingOutcome.SUCCESS: "completed",
+            ProcessingOutcome.FAILURE: "failed",
+            ProcessingOutcome.CANCELLED: "cancelled",
+        }
+        wire_outcome = outcomes.get(outcome)
+        send_completion = getattr(transport, "send_turn_completed", None)
+        if (
+            chat_id
+            and owner_id is not None
+            and wire_outcome is not None
+            and callable(send_completion)
+            and self.descriptor.supports_capability(
+                OWNER_BOUND_INTERRUPT_ACK_CAPABILITY
+            )
+            and self.descriptor.supports_capability(
+                OWNER_BOUND_TURN_COMPLETION_CAPABILITY
+            )
+            and self.descriptor.supports_capability(
+                OWNER_BOUND_TURN_RECONCILIATION_CAPABILITY
+            )
+        ):
+            session_key = self.session_key_for_source(source)
+            async with self._owner_transition_lock:
+                next_event = self._pending_messages.get(session_key)
+                next_owner_id = normalize_owner_id(
+                    getattr(next_event, "owner_id", None)
+                )
+                next_metadata = getattr(next_event, "metadata", {}) or {}
+                next_delivery_id = next_metadata.get("relay_delivery_id")
+                if not isinstance(next_delivery_id, str):
+                    next_owner_id = None
+                    next_delivery_id = None
+                await send_completion(
+                    session_key,
+                    chat_id,
+                    owner_id,
+                    wire_outcome,
+                    next_owner_id,
+                    next_delivery_id,
+                )
+
         # Reactions reflect a visible message, not an owner lifecycle. In
         # particular passthrough work has no relay owner and may be connected
         # to a pre-v3 peer, but its 👀 still needs a terminal projection.
@@ -3536,51 +3578,6 @@ class RelayAdapter(BasePlatformAdapter):
                 await self._react(chat_id, str(message_id), "✅")
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._react(chat_id, str(message_id), "❌")
-
-        if (
-            transport is None
-            or owner_id is None
-            or not self.descriptor.supports_capability(
-                OWNER_BOUND_INTERRUPT_ACK_CAPABILITY
-            )
-            or not self.descriptor.supports_capability(
-                OWNER_BOUND_TURN_COMPLETION_CAPABILITY
-            )
-            or not self.descriptor.supports_capability(
-                OWNER_BOUND_TURN_RECONCILIATION_CAPABILITY
-            )
-        ):
-            return
-        send_completion = getattr(transport, "send_turn_completed", None)
-        if not callable(send_completion):
-            return
-        outcomes = {
-            ProcessingOutcome.SUCCESS: "completed",
-            ProcessingOutcome.FAILURE: "failed",
-            ProcessingOutcome.CANCELLED: "cancelled",
-        }
-        wire_outcome = outcomes.get(outcome)
-        if wire_outcome is None:
-            return
-        session_key = self.session_key_for_source(source)
-        async with self._owner_transition_lock:
-            next_event = self._pending_messages.get(session_key)
-            next_owner_id = normalize_owner_id(
-                getattr(next_event, "owner_id", None)
-            )
-            next_metadata = getattr(next_event, "metadata", {}) or {}
-            next_delivery_id = next_metadata.get("relay_delivery_id")
-            if not isinstance(next_delivery_id, str):
-                next_owner_id = None
-                next_delivery_id = None
-            await send_completion(
-                session_key,
-                chat_id,
-                owner_id,
-                wire_outcome,
-                next_owner_id,
-                next_delivery_id,
-            )
 
     # ── Phase 4 thread lifecycle ──────────────────────────────────────────
 

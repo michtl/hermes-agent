@@ -22,7 +22,7 @@ OWNER_1 = "relay-turn-00000000-0000-4000-8000-000000000001"
 OWNER_2 = "relay-turn-00000000-0000-4000-8000-000000000002"
 
 
-def _descriptor() -> CapabilityDescriptor:
+def _descriptor(*, supported_ops: tuple[str, ...] = ("send", "edit", "typing", "prompt")) -> CapabilityDescriptor:
     return CapabilityDescriptor(
         contract_version=CONTRACT_VERSION,
         platform="relay",
@@ -33,7 +33,7 @@ def _descriptor() -> CapabilityDescriptor:
         supports_threads=False,
         markdown_dialect="plain",
         len_unit="chars",
-        supported_ops=("send", "edit", "typing", "prompt"),
+        supported_ops=supported_ops,
         capabilities=(
             OWNER_CAPABILITY,
             COMPLETION_CAPABILITY,
@@ -358,6 +358,53 @@ async def test_terminal_outcome_is_projected_as_safe_enum(
 
 
 @pytest.mark.asyncio
+async def test_terminal_completion_precedes_a_blocked_terminal_reaction() -> None:
+    """Cosmetic reaction RPCs must not hold the owner handoff barrier open."""
+    descriptor = _descriptor(
+        supported_ops=("send", "edit", "typing", "prompt", "react")
+    )
+    stub = StubConnector(descriptor)
+    adapter = RelayAdapter(
+        PlatformConfig(typing_indicator=False), descriptor, transport=stub
+    )
+    await adapter.connect()
+    reaction_started = asyncio.Event()
+    release_reaction = asyncio.Event()
+    completion_sent = asyncio.Event()
+    original_send_outbound = stub.send_outbound
+    original_completion = stub.send_turn_completed
+
+    async def blocked_reaction(action, *, platform=None):
+        if action.get("op") == "react" and not reaction_started.is_set():
+            reaction_started.set()
+            await release_reaction.wait()
+        return await original_send_outbound(action, platform=platform)
+
+    async def record_completion(*args, **kwargs):
+        completion_sent.set()
+        return await original_completion(*args, **kwargs)
+
+    stub.send_outbound = blocked_reaction  # type: ignore[method-assign]
+    stub.send_turn_completed = record_completion  # type: ignore[method-assign]
+
+    task = asyncio.create_task(
+        adapter.on_processing_complete(
+            _event(OWNER_1, "completion must not wait for react"),
+            ProcessingOutcome.SUCCESS,
+        )
+    )
+
+    try:
+        await asyncio.wait_for(completion_sent.wait(), timeout=0.2)
+        await asyncio.wait_for(reaction_started.wait(), timeout=0.2)
+        assert not task.done(), "the terminal reaction should still be blocked"
+        assert stub.turn_completions[0]["owner_id"] == OWNER_1
+    finally:
+        release_reaction.set()
+        await asyncio.wait_for(task, timeout=0.2)
+
+
+@pytest.mark.asyncio
 async def test_failed_turn_completion_follows_final_error_projection() -> None:
     stub = StubConnector(_descriptor())
     adapter = RelayAdapter(
@@ -611,3 +658,54 @@ async def test_active_turn_bypass_command_is_absorbed_by_the_real_owner_without_
             break
         await asyncio.sleep(0)
     assert [completion["owner_id"] for completion in stub.turn_completions] == [OWNER_1]
+
+
+@pytest.mark.asyncio
+async def test_second_executed_control_command_keeps_the_authoritative_owner() -> None:
+    """Command-on-command is admitted control work, never a rejected phantom turn."""
+    stub = StubConnector(_descriptor())
+    adapter = RelayAdapter(
+        PlatformConfig(typing_indicator=False), _descriptor(), transport=stub
+    )
+    await adapter.connect()
+    first_started = asyncio.Event()
+    commands: list[str] = []
+
+    async def handler(event):
+        if event.owner_id == OWNER_1:
+            first_started.set()
+            await asyncio.Event().wait()
+        commands.append(event.text)
+        return "Control command executed"
+
+    # Keep both command guards installed long enough to exercise the exact
+    # command-on-command acknowledgement path without racing detached cleanup.
+    scheduled_guards: list[asyncio.Event] = []
+    adapter._schedule_active_session_command_cleanup = (  # type: ignore[method-assign]
+        lambda _session_key, guard: scheduled_guards.append(guard)
+    )
+    adapter.set_message_handler(handler)
+    first = _event(OWNER_1, "long-running turn")
+    session_key = build_session_key(first.source)
+    await adapter.handle_message(first)
+    await asyncio.wait_for(first_started.wait(), timeout=0.5)
+
+    try:
+        first_command = await adapter._on_inbound(_event(OWNER_2, "/reset"))
+        second_command = await adapter._on_inbound(
+            _event("relay-turn-00000000-0000-4000-8000-000000000003", "/stop")
+        )
+
+        assert first_command["disposition"] == "absorbed"
+        assert second_command == {
+            "disposition": "absorbed",
+            "canonical_turn_owner_id": OWNER_1,
+            "session_key": session_key,
+            "chat_id": "mission-control",
+            "reason": None,
+        }
+        assert commands == ["/reset", "/stop"]
+        assert len(scheduled_guards) == 2
+    finally:
+        await adapter.cancel_background_tasks()
+        adapter._active_sessions.pop(session_key, None)

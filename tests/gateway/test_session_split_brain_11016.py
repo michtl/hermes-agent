@@ -142,9 +142,17 @@ class TestAdapterSessionCancellation:
 
         await adapter.handle_message(_make_event(command_text))
 
-        assert processing_cancelled.is_set(), (
-            f"{command_text} did not cancel the active processing task"
-        )
+        # Reset-like commands reply immediately; cancellation and guarded drain
+        # complete asynchronously so a wedged task cannot delay that reply.
+        await asyncio.wait_for(processing_cancelled.wait(), timeout=0.5)
+        for _ in range(50):
+            if (
+                sk not in adapter._active_sessions
+                and sk not in adapter._pending_messages
+                and sk not in adapter._session_tasks
+            ):
+                break
+            await asyncio.sleep(0.01)
         assert sk not in adapter._active_sessions
         assert sk not in adapter._pending_messages
         assert sk not in adapter._session_tasks
@@ -296,3 +304,46 @@ class TestOldTaskCannotClobberNewerGuard:
         adapter._release_session_guard(sk, guard=new_guard)
         assert sk not in adapter._active_sessions
 
+
+@pytest.mark.asyncio
+async def test_stale_command_drain_cannot_cancel_or_replace_a_fresh_successor() -> None:
+    """A detached /stop cleanup owns only the command guard it installed.
+
+    This is the /stop#1 + queued M + /stop#2 tail: once the second command
+    replaces the first command guard and starts M, the first cleanup must be a
+    no-op.  In particular it must not consume M, replace its guard, or cancel
+    the fresh task that now owns the session.
+    """
+    adapter = _make_adapter()
+    sk = _session_key()
+    stale_command_guard = asyncio.Event()
+    fresh_message_guard = asyncio.Event()
+    fresh_event = _make_event("M")
+    finish_fresh = asyncio.Event()
+    fresh_task = asyncio.create_task(finish_fresh.wait())
+    adapter._active_sessions[sk] = fresh_message_guard
+    adapter._session_tasks[sk] = fresh_task
+    adapter._pending_messages[sk] = fresh_event
+    adapter._message_handler = lambda _event: asyncio.sleep(0, result="unexpected")
+
+    try:
+        await adapter._drain_pending_after_session_command(sk, stale_command_guard)
+
+        assert adapter._active_sessions.get(sk) is fresh_message_guard
+        assert adapter._session_tasks.get(sk) is fresh_task
+        assert not fresh_task.cancelled()
+        assert adapter._pending_messages.get(sk) is fresh_event
+
+        # The fresh owner can still finish and clean up normally; the stale
+        # drain must not strand its guard after refusing to touch it.
+        adapter._pending_messages.pop(sk)
+        finish_fresh.set()
+        await fresh_task
+        adapter._cleanup_finished_session_task(sk, fresh_message_guard)
+        assert sk not in adapter._active_sessions
+        assert sk not in adapter._session_tasks
+    finally:
+        if not fresh_task.done():
+            fresh_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await fresh_task
