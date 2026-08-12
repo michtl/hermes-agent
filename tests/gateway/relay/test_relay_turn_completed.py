@@ -571,3 +571,43 @@ async def test_queued_handoff_completes_owner_n_before_owner_n_plus_one_binds() 
     assert [item["owner_id"] for item in stub.turn_completions] == [OWNER_1, OWNER_2]
     assert stub.turn_completions[0]["next_owner_id"] == OWNER_2
     assert stub.turn_completions[0]["next_delivery_id"] == "delivery-owner-2"
+
+
+@pytest.mark.asyncio
+async def test_active_turn_bypass_command_is_absorbed_by_the_real_owner_without_phantom_owner() -> None:
+    """A relay /reset is control traffic for A, never a short-lived owner B."""
+    stub = StubConnector(_descriptor())
+    adapter = RelayAdapter(
+        PlatformConfig(typing_indicator=False), _descriptor(), transport=stub
+    )
+    await adapter.connect()
+    first_started = asyncio.Event()
+
+    async def handler(event):
+        if event.owner_id == OWNER_1:
+            first_started.set()
+            await asyncio.Event().wait()
+        return "Reset confirmed"
+
+    adapter.set_message_handler(handler)
+    first = _event(OWNER_1, "long-running turn")
+    session_key = build_session_key(first.source)
+    await adapter.handle_message(first)
+    await asyncio.wait_for(first_started.wait(), timeout=0.5)
+
+    command = _event(OWNER_2, "/reset")
+    result = await asyncio.wait_for(adapter._on_inbound(command), timeout=0.5)
+
+    assert result == {
+        "disposition": "absorbed",
+        "canonical_turn_owner_id": OWNER_1,
+        "session_key": session_key,
+        "chat_id": "mission-control",
+        "reason": None,
+    }
+    assert stub.turn_starts == [OWNER_1]
+    for _ in range(50):
+        if stub.turn_completions:
+            break
+        await asyncio.sleep(0)
+    assert [completion["owner_id"] for completion in stub.turn_completions] == [OWNER_1]

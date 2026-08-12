@@ -1100,9 +1100,20 @@ class RelayAdapter(BasePlatformAdapter):
             disposition = "absorbed"
         else:
             disposition = "rejected"
+        canonical_owner = owner_after
+        if disposition == "absorbed":
+            # Reset-like bypass commands are control traffic for the already
+            # running owner. Their temporary command guard intentionally has
+            # no owner, so preserve the pre-dispatch guard identity rather than
+            # reporting a phantom B or a false terminal rejection.
+            marked_owner = normalize_owner_id(
+                event.metadata.get("relay_owner_canonical_id")
+            )
+            if marked_owner is not None:
+                canonical_owner = marked_owner
         return {
             "disposition": disposition,
-            "canonical_turn_owner_id": owner_after,
+            "canonical_turn_owner_id": canonical_owner,
             "session_key": session_key,
             "chat_id": str(event.source.chat_id),
             "reason": event.metadata.get("relay_owner_disposition_reason"),
@@ -3510,10 +3521,25 @@ class RelayAdapter(BasePlatformAdapter):
         owner_id = normalize_owner_id(getattr(event, "owner_id", None))
         source = getattr(event, "source", None)
         chat_id = str(getattr(source, "chat_id", "") or "")
+        if not chat_id:
+            return
+
+        # Reactions reflect a visible message, not an owner lifecycle. In
+        # particular passthrough work has no relay owner and may be connected
+        # to a pre-v3 peer, but its 👀 still needs a terminal projection.
+        message_id = getattr(event, "message_id", None) or getattr(
+            event.source, "message_id", None
+        )
+        if message_id:
+            await self._react(chat_id, str(message_id), "👀", remove=True)
+            if outcome == ProcessingOutcome.SUCCESS:
+                await self._react(chat_id, str(message_id), "✅")
+            elif outcome == ProcessingOutcome.FAILURE:
+                await self._react(chat_id, str(message_id), "❌")
+
         if (
             transport is None
             or owner_id is None
-            or not chat_id
             or not self.descriptor.supports_capability(
                 OWNER_BOUND_INTERRUPT_ACK_CAPABILITY
             )
@@ -3555,18 +3581,6 @@ class RelayAdapter(BasePlatformAdapter):
                 next_owner_id,
                 next_delivery_id,
             )
-
-        # Reactions are cosmetic and follow the authoritative terminal record;
-        # a slow connector can no longer delay completion or queued handoff.
-        message_id = getattr(event, "message_id", None) or getattr(
-            event.source, "message_id", None
-        )
-        if message_id:
-            await self._react(chat_id, str(message_id), "👀", remove=True)
-            if outcome == ProcessingOutcome.SUCCESS:
-                await self._react(chat_id, str(message_id), "✅")
-            elif outcome == ProcessingOutcome.FAILURE:
-                await self._react(chat_id, str(message_id), "❌")
 
     # ── Phase 4 thread lifecycle ──────────────────────────────────────────
 

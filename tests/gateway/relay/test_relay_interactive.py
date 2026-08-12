@@ -446,6 +446,23 @@ async def test_processing_lifecycle_reacts_eyes_then_check():
     assert all(r["message_id"] == "m42" and r["chat_id"] == "ch1" for r in reacts)
 
 
+@pytest.mark.asyncio
+async def test_ownerless_passthrough_completion_still_projects_terminal_reactions():
+    """Passthrough work has no relay owner, but its visible 👀 must still settle."""
+    adapter, stub = _adapter()
+    event = _reactable_event()
+    event.owner_id = None
+    adapter.descriptor = make_desc(capabilities=())
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    reacts = [action for action in stub.sent if action["op"] == "react"]
+    assert [(reaction["emoji"], reaction.get("remove", False)) for reaction in reacts] == [
+        ("👀", True),
+        ("✅", False),
+    ]
+
+
 # ── fanned-out prompt answers (one press, many gateways) ─────────────────
 #
 # The connector delivers a passthrough forward (a Discord button press) to

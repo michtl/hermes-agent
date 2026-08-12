@@ -254,6 +254,36 @@ async def test_control_and_clarify_messages_bypass_text_debounce():
     assert session_key not in adapter._pending_messages
 
 
+@pytest.mark.asyncio
+async def test_reset_command_response_does_not_wait_for_slow_cancel_cleanup():
+    """A platform command must reply while its cancelled turn unwinds in the background."""
+    adapter = _make_adapter()
+    active = _make_event("long-running")
+    session_key = build_session_key(active.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+    active_task = asyncio.create_task(asyncio.Event().wait())
+    adapter._session_tasks[session_key] = active_task
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    async def slow_cancel(*_args, **_kwargs):
+        cleanup_started.set()
+        await release_cleanup.wait()
+
+    adapter.cancel_session_processing = slow_cancel  # type: ignore[method-assign]
+    adapter._message_handler = AsyncMock(return_value="Reset confirmed")
+    command = _make_event("/reset")
+
+    await asyncio.wait_for(adapter.handle_message(command), timeout=0.1)
+    await asyncio.wait_for(cleanup_started.wait(), timeout=0.1)
+    assert adapter._message_handler.await_count == 1
+
+    release_cleanup.set()
+    await asyncio.sleep(0)
+    active_task.cancel()
+    await asyncio.gather(active_task, return_exceptions=True)
+
+
 def test_adapter_defaults_to_interrupt_mode(monkeypatch):
     monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
     adapter = _make_initialized_adapter()
@@ -265,4 +295,3 @@ def test_command_messages_bypass_debounce_even_in_queue_mode():
     adapter = _make_adapter()
     assert not adapter._is_queue_text_debounce_candidate(_make_event(""))
     assert not adapter._is_queue_text_debounce_candidate(_make_event("/stop"))
-

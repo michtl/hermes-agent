@@ -6423,13 +6423,20 @@ class BasePlatformAdapter(ABC):
                         message_id=_r.message_id,
                         ttl_seconds=_eph_ttl,
                     )
-            # Old adapter task (if any) is cancelled AFTER the response has
-            # been sent — keeps ordering deterministic and avoids the race.
-            await self.cancel_session_processing(
-                session_key,
-                release_guard=False,
-                discard_pending=False,
-            )
+            # The control delivery is not a new model turn.  On relay it is
+            # absorbed by the guard it is about to stop, so the connector can
+            # retire B without ever inventing a short-lived owner for it.
+            if getattr(event, "owner_id", None) and current_guard is not None:
+                prior_owner = getattr(current_guard, "_hermes_owner_id", None)
+                if isinstance(prior_owner, str) and prior_owner:
+                    event.metadata["relay_owner_disposition"] = "absorbed"
+                    event.metadata["relay_owner_canonical_id"] = prior_owner
+
+            # The response is already visible.  Do not make every platform's
+            # /stop,/new,/reset latency inherit the bounded cancellation timeout
+            # of a wedged previous task; the command guard remains installed
+            # until this detached cleanup drains it and any queued successor.
+            self._schedule_active_session_command_cleanup(session_key, command_guard)
         except Exception:
             # On failure, restore the original guard if one still exists so
             # we don't leave the session in a half-reset state.
@@ -6440,7 +6447,35 @@ class BasePlatformAdapter(ABC):
                     self._release_session_guard(session_key, guard=command_guard)
             raise
 
-        await self._drain_pending_after_session_command(session_key, command_guard)
+    def _schedule_active_session_command_cleanup(
+        self, session_key: str, command_guard: asyncio.Event
+    ) -> None:
+        """Finish a reset-like command without holding its response hostage."""
+
+        async def _cleanup() -> None:
+            try:
+                await self.cancel_session_processing(
+                    session_key,
+                    release_guard=False,
+                    discard_pending=False,
+                )
+            except asyncio.CancelledError:
+                # Shutdown may cancel detached cleanup.  The guarded drain in
+                # finally still releases the adapter state deterministically.
+                logger.debug("[%s] Command cleanup cancelled for %s", self.name, session_key)
+            except Exception:
+                logger.debug("[%s] Command cleanup failed for %s", self.name, session_key, exc_info=True)
+            finally:
+                try:
+                    await self._drain_pending_after_session_command(
+                        session_key, command_guard
+                    )
+                except Exception:
+                    logger.debug("[%s] Command pending drain failed for %s", self.name, session_key, exc_info=True)
+
+        cleanup_task = asyncio.create_task(_cleanup())
+        self._background_tasks.add(cleanup_task)
+        cleanup_task.add_done_callback(self._background_tasks.discard)
 
     async def handle_message(self, event: MessageEvent) -> None:
         """
