@@ -5,20 +5,27 @@ speaks the newline-delimited JSON frame protocol defined in the connector repo
 (``gateway-gateway`` ``src/relay/protocol.ts``) and mirrored in
 ``docs/relay-connector-contract.md``:
 
-  gateway -> connector : hello, outbound, interrupt, interrupt_result
+  gateway -> connector : hello, outbound, interrupt, interrupt_result,
+                         inbound_ack, turn_completed
   connector -> gateway : descriptor, inbound, outbound_result, interrupt_inbound
 
 Frames:
   hello            {type, platform, botId, contract_version, capabilities,
-                    runtime_epoch}
+                    runtime_epoch, turn_states}
   descriptor       {type, descriptor}                       (handshake reply)
-  inbound          {type, event, bufferId?}                 (a normalized MessageEvent)
+  inbound          {type, delivery_id, event, bufferId?}    (a normalized MessageEvent)
+  inbound_ack      {type, delivery_id, session_key, chat_id, owner_id,
+                    runtime_epoch, disposition, canonical_turn_owner_id,
+                    owner_state_seq, bufferId?}
   outbound         {type, requestId, action}                (send/edit/typing/follow_up)
   outbound_result  {type, requestId, result}
   interrupt        {type, session_key, reason?}             (gateway egresses /stop)
   interrupt_inbound{type, session_key, chat_id, owner_id,
                     action_id}                              (connector -> owning gateway)
   interrupt_result {type, action_id, accepted, reason}      (gateway -> connector)
+  turn_completed   {type, session_key, chat_id, owner_id, runtime_epoch,
+                    outcome, owner_state_seq, status,
+                    next_owner_id, next_delivery_id}        (gateway -> connector)
 
 This is the concrete transport behind the ``RelayTransport`` Protocol; the
 ``RelayAdapter`` delegates all wire I/O to it. Outbound calls block on a
@@ -43,13 +50,16 @@ from typing import Any, Dict, List, Optional
 
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.interrupt_budget import INTERRUPT_HANDLER_TIMEOUT_SECONDS
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_key
 from gateway.relay.descriptor import (
     CONTRACT_VERSION,
     OWNER_BOUND_INTERRUPT_ACK_CAPABILITY,
+    OWNER_BOUND_TURN_COMPLETION_CAPABILITY,
+    OWNER_BOUND_TURN_RECONCILIATION_CAPABILITY,
     CapabilityDescriptor,
 )
 from gateway.relay.transport import InboundHandler, normalize_owner_id
+from gateway.relay.auth import turn_state_scope_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +90,9 @@ _INTERRUPT_QUEUE_PER_SESSION = 8
 _INTERRUPT_ACTION_CACHE = 512
 _INTERRUPT_MAX_SESSION_WORKERS = 64
 _INTERRUPT_MAX_TRACKED_TASKS = 128
+_TURN_STATE_CACHE = 256
+_INBOUND_ACK_CACHE = 1024
+_TERMINAL_SEND_TIMEOUT_S = 1.0
 
 
 def _normalize_control_identifier(value: Any, *, max_length: int) -> Optional[str]:
@@ -556,6 +569,21 @@ class WebSocketRelayTransport:
         self._interrupt_tasks: set[asyncio.Task] = set()
         self._interrupt_workers: Dict[str, asyncio.Task] = {}
         self._interrupt_actions: OrderedDict[str, None] = OrderedDict()
+        # Owner-bound terminal frames are emitted at most once for this
+        # process-lifetime runtime epoch, even if a defensive lifecycle hook is
+        # invoked twice. A reconnect keeps the epoch and this cache; a process
+        # restart creates both anew.
+        self._turn_completion_owners: OrderedDict[
+            tuple[str, str, str], None
+        ] = OrderedDict()
+        # Runtime-epoch-scoped authoritative owner snapshots. They survive a
+        # socket reconnect and make a lost terminal write reconcilable in the
+        # next hello without an unbounded replay queue.
+        self._turn_states: OrderedDict[tuple[str, str], Dict[str, Any]] = OrderedDict()
+        # Latest acknowledgement per connector-issued delivery id. Replaying a
+        # durable inbound after an ack loss replays this exact disposition and
+        # never dispatches the user event twice.
+        self._inbound_ack_frames: OrderedDict[str, Dict[str, Any]] = OrderedDict()
         # Phase 5 §5.3: future awaiting the connector's going_idle_ack.
         self._going_idle_ack: asyncio.Future[None] | None = None
         self._closing = False
@@ -623,8 +651,13 @@ class WebSocketRelayTransport:
                 "platform": platform,
                 "botId": bot_id,
                 "contract_version": CONTRACT_VERSION,
-                "capabilities": [OWNER_BOUND_INTERRUPT_ACK_CAPABILITY],
+                "capabilities": [
+                    OWNER_BOUND_INTERRUPT_ACK_CAPABILITY,
+                    OWNER_BOUND_TURN_COMPLETION_CAPABILITY,
+                    OWNER_BOUND_TURN_RECONCILIATION_CAPABILITY,
+                ],
                 "runtime_epoch": self._runtime_epoch,
+                "turn_states": self._hello_turn_state_snapshots(),
             }
             # Phase 4: declare the gateway's slash-command set on the Discord
             # hello. The connector (which holds the bot token) reconciles
@@ -866,17 +899,192 @@ class WebSocketRelayTransport:
             logger.debug("relay go_dormant: ws.close() raised or timed out", exc_info=True)
         return acked
 
-    async def _send_inbound_ack(self, buffer_id: str) -> None:
-        """Acknowledge durable receipt of a buffered inbound delivery (§5.3).
+    def _ensure_turn_state(self) -> None:
+        if not hasattr(self, "_turn_states"):
+            self._turn_states = OrderedDict()
+        if not hasattr(self, "_inbound_ack_frames"):
+            self._inbound_ack_frames = OrderedDict()
 
-        Sent after the adapter has durably taken a buffered inbound event the
-        connector replayed on reconnect; the connector acks the buffer entry only
-        after this, giving drain-without-dup on the delivery leg.
+    def _turn_state_snapshots(self) -> list[Dict[str, Any]]:
+        self._ensure_turn_state()
+        return [dict(state) for state in self._turn_states.values()]
+
+    def _hello_turn_state_snapshots(self) -> list[Dict[str, Any]]:
+        """Return authenticated scope projections without leaking session keys.
+
+        One transport may retain owner states for several connector scopes.
+        The shared upgrade secret lets each connector match only its own
+        session/chat pair while unrelated raw identifiers stay off the wire.
+        An unauthenticated transport gets no reconciliation ledger at all.
         """
+        secret = str(getattr(self, "_upgrade_secret", "") or "")
+        if not secret:
+            return []
+        snapshots = []
+        for state in self._turn_state_snapshots():
+            session_key = str(state.pop("session_key"))
+            chat_id = str(state.pop("chat_id"))
+            state["scope_fingerprint"] = turn_state_scope_fingerprint(
+                secret, session_key, chat_id
+            )
+            snapshots.append(state)
+        return snapshots
+
+    def _remember_turn_state(self, key: tuple[str, str], state: Dict[str, Any]) -> None:
+        self._turn_states[key] = state
+        self._turn_states.move_to_end(key)
+        while len(self._turn_states) > _TURN_STATE_CACHE:
+            self._turn_states.popitem(last=False)
+
+    def _state_for_scope(self, session_key: str, chat_id: str) -> Dict[str, Any]:
+        self._ensure_turn_state()
+        key = (session_key, chat_id)
+        state = self._turn_states.get(key)
+        if state is None:
+            state = {
+                "session_key": session_key,
+                "chat_id": chat_id,
+                "owner_state_seq": 0,
+                "status": "idle",
+                "active_owner_id": None,
+                "terminal_owner_id": None,
+                "terminal_outcome": None,
+                "next_owner_id": None,
+                "next_delivery_id": None,
+            }
+            self._remember_turn_state(key, state)
+        return state
+
+    async def _publish_inbound_ack(
+        self,
+        event: MessageEvent,
+        result: Dict[str, Any],
+        *,
+        delivery_id: str,
+        buffer_id: Optional[str] = None,
+    ) -> bool:
+        """Record and send one authoritative inbound owner disposition."""
+        self._ensure_turn_state()
+        owner_id = normalize_owner_id(getattr(event, "owner_id", None))
+        session_key = _normalize_control_identifier(
+            result.get("session_key"), max_length=512
+        )
+        chat_id = _normalize_control_identifier(result.get("chat_id"), max_length=256)
+        disposition = result.get("disposition")
+        canonical_owner = normalize_owner_id(result.get("canonical_turn_owner_id"))
+        if (
+            owner_id is None
+            or session_key is None
+            or chat_id is None
+            or disposition not in {"started", "queued", "absorbed", "merged", "rejected"}
+        ):
+            return False
+
+        state = self._state_for_scope(session_key, chat_id)
+        if disposition == "started":
+            if canonical_owner != owner_id:
+                return False
+            if state["status"] != "running" or state["active_owner_id"] != owner_id:
+                state = {
+                    "session_key": session_key,
+                    "chat_id": chat_id,
+                    "owner_state_seq": int(state["owner_state_seq"]) + 1,
+                    "status": "running",
+                    "active_owner_id": owner_id,
+                    "terminal_owner_id": None,
+                    "terminal_outcome": None,
+                    "next_owner_id": None,
+                    "next_delivery_id": None,
+                }
+                self._remember_turn_state((session_key, chat_id), state)
+        else:
+            # The adapter guard is intentionally still A for the few awaits
+            # between terminal publication A->B and B's actual guard bind. It
+            # must never leak that already-terminal guard (or speculative B)
+            # as stoppable in an ack for a concurrently arriving C.
+            if state["status"] == "handoff":
+                canonical_owner = None
+            elif state["status"] == "idle" and int(state["owner_state_seq"]) > 0:
+                canonical_owner = None
+            if canonical_owner is not None and state["status"] == "idle" and int(state["owner_state_seq"]) == 0:
+                state = {
+                    **state,
+                    "owner_state_seq": 1,
+                    "status": "running",
+                    "active_owner_id": canonical_owner,
+                }
+                self._remember_turn_state((session_key, chat_id), state)
+            elif canonical_owner is not None and (
+                state["status"] != "running"
+                or state["active_owner_id"] != canonical_owner
+            ):
+                return False
+
+        frame: Dict[str, Any] = {
+            "type": "inbound_ack",
+            "delivery_id": delivery_id,
+            "session_key": session_key,
+            "chat_id": chat_id,
+            "owner_id": owner_id,
+            "runtime_epoch": self._runtime_epoch,
+            "disposition": disposition,
+            "canonical_turn_owner_id": canonical_owner,
+            "owner_state_seq": state["owner_state_seq"],
+        }
+        if buffer_id:
+            frame["bufferId"] = buffer_id
+        reason = _normalize_control_identifier(result.get("reason"), max_length=128)
+        if reason is not None:
+            frame["reason"] = reason
+        # ``on_processing_start`` can publish ``started`` while the original
+        # inbound handler is still unwinding.  The enclosing inbound frame
+        # then observes the same guard and derives the identical disposition.
+        # Emit that exact event-local acknowledgement only once.  A failed
+        # send deliberately leaves no marker so the enclosing path retries;
+        # reconnect/redelivery still uses the durable delivery-id cache below.
+        published = getattr(event, "metadata", {}).get(
+            "_relay_published_inbound_ack"
+        )
+        if published == frame:
+            return True
+        self._inbound_ack_frames[delivery_id] = dict(frame)
+        self._inbound_ack_frames.move_to_end(delivery_id)
+        while len(self._inbound_ack_frames) > _INBOUND_ACK_CACHE:
+            self._inbound_ack_frames.popitem(last=False)
         try:
-            await self._send({"type": "inbound_ack", "bufferId": buffer_id})
-        except Exception:  # noqa: BLE001 - a failed ack just redelivers the entry next time
-            logger.debug("relay: inbound_ack send failed for %s", buffer_id)
+            await self._send(frame)
+        except Exception:  # reconciliation/replay is authoritative after reconnect
+            logger.debug("relay: owner disposition send failed for %s", delivery_id)
+            return False
+        event.metadata["_relay_published_inbound_ack"] = dict(frame)
+        return True
+
+    async def send_turn_started(self, event: MessageEvent) -> bool:
+        """Promote a previously queued delivery after its guard is bound."""
+        metadata = getattr(event, "metadata", {}) or {}
+        delivery_id = _normalize_control_identifier(
+            metadata.get("relay_delivery_id"), max_length=128
+        )
+        session_key = _normalize_control_identifier(
+            metadata.get("relay_session_key"), max_length=512
+        )
+        chat_id = _normalize_control_identifier(
+            metadata.get("relay_chat_id"), max_length=256
+        )
+        owner_id = normalize_owner_id(getattr(event, "owner_id", None))
+        if not all((delivery_id, session_key, chat_id, owner_id)):
+            return False
+        return await self._publish_inbound_ack(
+            event,
+            {
+                "disposition": "started",
+                "canonical_turn_owner_id": owner_id,
+                "session_key": session_key,
+                "chat_id": chat_id,
+            },
+            delivery_id=delivery_id,
+            buffer_id=metadata.get("relay_buffer_id"),
+        )
 
     async def _request_response(
         self,
@@ -1016,6 +1224,16 @@ class WebSocketRelayTransport:
                     self._reconnect_loop(), name="relay-ws-reconnect"
                 )
         finally:
+            # An inbound-handler exception can end the reader while the peer
+            # socket remains established. Close this reader's exact socket so a
+            # single-slot connector can accept the supervisor's replacement.
+            if ws is not None and not self._closing:
+                try:
+                    await asyncio.wait_for(
+                        ws.close(), timeout=_TEARDOWN_AWAIT_TIMEOUT_S
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             # The socket this reader served is dead. Drop the handle (identity-
             # guarded: a re-dial that already installed a FRESH socket must not
             # be clobbered) so every `self._ws is None` liveness check — send,
@@ -1106,11 +1324,17 @@ class WebSocketRelayTransport:
                 or not descriptor.supports_capability(
                     OWNER_BOUND_INTERRUPT_ACK_CAPABILITY
                 )
+                or not descriptor.supports_capability(
+                    OWNER_BOUND_TURN_COMPLETION_CAPABILITY
+                )
+                or not descriptor.supports_capability(
+                    OWNER_BOUND_TURN_RECONCILIATION_CAPABILITY
+                )
             ):
                 logger.warning(
-                    "relay descriptor rejected reason=owner_bound_interrupt_ack_required"
+                    "relay descriptor rejected reason=owner_bound_control_capabilities_required"
                 )
-                error = RuntimeError("relay connector contract v2 required")
+                error = RuntimeError("relay connector contract v3 required")
                 if (
                     self._descriptor_ready is not None
                     and not self._descriptor_ready.done()
@@ -1120,7 +1344,7 @@ class WebSocketRelayTransport:
                     try:
                         await self._ws.close(
                             code=4406,
-                            reason="relay contract v2 required",
+                            reason="relay contract v3 required",
                         )
                     except Exception:  # noqa: BLE001 - fail-closed best-effort close
                         logger.debug("relay incompatible descriptor close failed")
@@ -1148,14 +1372,44 @@ class WebSocketRelayTransport:
         elif ftype == "inbound":
             if self._inbound is not None:
                 event = _event_from_wire(frame.get("event", {}))
-                await self._inbound(event)
-                # Phase 5 §5.3: a buffered delivery (replayed on reconnect) carries
-                # a bufferId; ack it after the handler has durably taken it so the
-                # connector advances its delivery-leg buffer cursor (no dup). A live
-                # delivery has no bufferId — nothing to ack.
-                buffer_id = frame.get("bufferId")
-                if buffer_id:
-                    await self._send_inbound_ack(str(buffer_id))
+                delivery_id = _normalize_control_identifier(
+                    frame.get("delivery_id"), max_length=128
+                )
+                if delivery_id is None or normalize_owner_id(event.owner_id) is None:
+                    logger.info("relay inbound dropped reason=invalid_owner_delivery_identity")
+                    return
+                buffer_id = _normalize_control_identifier(
+                    frame.get("bufferId"), max_length=256
+                )
+                self._ensure_turn_state()
+                cached = self._inbound_ack_frames.get(delivery_id)
+                if cached is not None:
+                    replay = dict(cached)
+                    if buffer_id is not None:
+                        replay["bufferId"] = buffer_id
+                    try:
+                        await self._send(replay)
+                    except Exception:
+                        logger.debug("relay: cached inbound_ack replay failed")
+                    return
+                session_key = build_session_key(event.source)
+                chat_id = str(getattr(event.source, "chat_id", "") or "")
+                event.metadata["relay_delivery_id"] = delivery_id
+                event.metadata["relay_session_key"] = session_key
+                event.metadata["relay_chat_id"] = chat_id
+                if buffer_id is not None:
+                    event.metadata["relay_buffer_id"] = buffer_id
+                # A handler exception is transient delivery failure, not an
+                # authoritative negative admission. Let the reader fail/re-dial
+                # without publishing or caching an ack so a durable connector
+                # lease can redeliver this same delivery at least once.
+                result = await self._inbound(event)
+                await self._publish_inbound_ack(
+                    event,
+                    result if isinstance(result, dict) else {},
+                    delivery_id=delivery_id,
+                    buffer_id=buffer_id,
+                )
         elif ftype == "going_idle_ack":
             # Phase 5 §5.3: the connector confirmed our destination is now
             # buffered-only; resolve the waiter go_idle() is blocked on.
@@ -1220,6 +1474,123 @@ class WebSocketRelayTransport:
             "accepted": accepted,
             "reason": reason,
         })
+
+    async def send_turn_completed(
+        self,
+        session_key: str,
+        chat_id: str,
+        owner_id: str,
+        outcome: str,
+        next_owner_id: Optional[str] = None,
+        next_delivery_id: Optional[str] = None,
+    ) -> bool:
+        """Send one correlated terminal-turn frame for the current epoch."""
+        descriptor = getattr(self, "_descriptor", None)
+        if (
+            descriptor is None
+            or not descriptor.supports_capability(
+                OWNER_BOUND_INTERRUPT_ACK_CAPABILITY
+            )
+            or not descriptor.supports_capability(
+                OWNER_BOUND_TURN_COMPLETION_CAPABILITY
+            )
+            or not descriptor.supports_capability(
+                OWNER_BOUND_TURN_RECONCILIATION_CAPABILITY
+            )
+        ):
+            return False
+        normalized_session = _normalize_control_identifier(
+            session_key, max_length=512
+        )
+        normalized_chat = _normalize_control_identifier(chat_id, max_length=256)
+        normalized_owner = normalize_owner_id(owner_id)
+        normalized_next_owner = (
+            normalize_owner_id(next_owner_id) if next_owner_id is not None else None
+        )
+        normalized_next_delivery = (
+            _normalize_control_identifier(next_delivery_id, max_length=128)
+            if next_delivery_id is not None else None
+        )
+        if (
+            normalized_session is None
+            or normalized_chat is None
+            or normalized_owner is None
+            or outcome not in {"completed", "failed", "cancelled"}
+            or ((normalized_next_owner is None) != (normalized_next_delivery is None))
+        ):
+            return False
+        self._ensure_turn_completion_state()
+        owner_key = (normalized_session, normalized_chat, normalized_owner)
+        if owner_key in self._turn_completion_owners:
+            return False
+        state = self._state_for_scope(normalized_session, normalized_chat)
+        if (
+            state["status"] == "running"
+            and state["active_owner_id"] != normalized_owner
+        ):
+            return False
+        if state["status"] == "idle" and int(state["owner_state_seq"]) > 0:
+            return False
+        state = {
+            "session_key": normalized_session,
+            "chat_id": normalized_chat,
+            "owner_state_seq": int(state["owner_state_seq"]) + 1,
+            "status": "handoff" if normalized_next_owner else "idle",
+            "active_owner_id": None,
+            "terminal_owner_id": normalized_owner,
+            "terminal_outcome": outcome,
+            "next_owner_id": normalized_next_owner,
+            "next_delivery_id": normalized_next_delivery,
+        }
+        self._remember_turn_state((normalized_session, normalized_chat), state)
+        frame = {
+            "type": "turn_completed",
+            "session_key": normalized_session,
+            "chat_id": normalized_chat,
+            "owner_id": normalized_owner,
+            "runtime_epoch": self._runtime_epoch,
+            "outcome": outcome,
+            "owner_state_seq": state["owner_state_seq"],
+            "status": state["status"],
+            "next_owner_id": normalized_next_owner,
+            "next_delivery_id": normalized_next_delivery,
+        }
+        self._turn_completion_owners[owner_key] = None
+        while len(self._turn_completion_owners) > 1024:
+            self._turn_completion_owners.popitem(last=False)
+        send_task = asyncio.create_task(self._send(frame))
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(send_task), timeout=_TERMINAL_SEND_TIMEOUT_S
+            )
+        except asyncio.CancelledError:
+            send_task.cancel()
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(asyncio.gather(send_task, return_exceptions=True)),
+                    timeout=_TEARDOWN_AWAIT_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                pass
+            logger.debug("relay turn completion task cancelled after bounded send cleanup")
+            raise
+        except (asyncio.TimeoutError, Exception):
+            send_task.cancel()
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(asyncio.gather(send_task, return_exceptions=True)),
+                    timeout=_TEARDOWN_AWAIT_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                pass
+            logger.debug("relay turn completion deferred to hello reconciliation")
+            return False
+        return True
+
+    def _ensure_turn_completion_state(self) -> None:
+        """Initialize completion state for normal and object.__new__ tests."""
+        if not hasattr(self, "_turn_completion_owners"):
+            self._turn_completion_owners = OrderedDict()
 
     def _spawn_interrupt_result(
         self, action_id: str, accepted: bool, reason: str

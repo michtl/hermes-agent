@@ -1442,6 +1442,51 @@ async def test_base_processing_releases_post_delivery_callback_after_main_send()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("platform", [Platform.TELEGRAM, Platform.DISCORD])
+async def test_generic_platform_handoff_starts_before_slow_post_delivery_callback(platform):
+    adapter = ProgressCaptureAdapter(platform=platform)
+    callback_started = asyncio.Event()
+    release_callback = asyncio.Event()
+    successor_started = asyncio.Event()
+    source = SessionSource(
+        platform=platform,
+        chat_id="generic-room",
+        chat_type="dm",
+        user_id="owner",
+    )
+    first = MessageEvent(
+        text="first", message_type=MessageType.TEXT, source=source, message_id="first",
+    )
+    second = MessageEvent(
+        text="second", message_type=MessageType.TEXT, source=source, message_id="second",
+    )
+    session_key = adapter.session_key_for_source(source)
+
+    async def handler(event):
+        if event.message_id == "first":
+            adapter._pending_messages[session_key] = second
+            return "first done"
+        successor_started.set()
+        return None
+
+    async def post_delivery():
+        callback_started.set()
+        await release_callback.wait()
+
+    adapter.set_message_handler(handler)
+    adapter.register_post_delivery_callback(session_key, post_delivery)
+    assert adapter._start_session_processing(first, session_key)
+    first_task = adapter._session_tasks[session_key]
+
+    await asyncio.wait_for(callback_started.wait(), timeout=1.0)
+    try:
+        await asyncio.wait_for(successor_started.wait(), timeout=0.25)
+    finally:
+        release_callback.set()
+        await first_task
+
+
+@pytest.mark.asyncio
 async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
     monkeypatch,
 ):

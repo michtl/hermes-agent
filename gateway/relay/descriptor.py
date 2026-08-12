@@ -9,8 +9,9 @@ Telegram, Matrix, Signal, ... without per-platform branching.
 
 EXPERIMENTAL: this schema MAY CHANGE without a deprecation cycle until at least
 two real Class-1 platforms have validated it. Evolution during the experimental
-phase is additive-only, gated by ``contract_version`` (see
-docs/relay-connector-contract.md).
+phase keeps additions backward-compatible within a version; breaking or
+reinterpreted control semantics require a coordinated ``contract_version`` bump
+(see docs/relay-connector-contract.md).
 
 Field origins (most are a wire-serializable projection of ``PlatformEntry`` plus
 the per-instance capability methods on ``BasePlatformAdapter``):
@@ -33,10 +34,12 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 
-# Bump additively (never reinterpret an existing field) during the experimental
-# phase; a breaking change requires updating both repos in lockstep.
-CONTRACT_VERSION = 2
+# Never reinterpret an existing version. Breaking control semantics require a
+# version bump and coordinated updates in both repos.
+CONTRACT_VERSION = 3
 OWNER_BOUND_INTERRUPT_ACK_CAPABILITY = "owner-bound-interrupt-ack"
+OWNER_BOUND_TURN_COMPLETION_CAPABILITY = "owner-bound-turn-completion"
+OWNER_BOUND_TURN_RECONCILIATION_CAPABILITY = "owner-bound-turn-reconciliation"
 
 
 @dataclass(frozen=True)

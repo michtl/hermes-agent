@@ -201,6 +201,7 @@ class TestBusySessionAck:
         adapter = _make_adapter()
 
         event = _make_event(text="also check the tests")
+        event.owner_id = "opaque-owner-steer"
         sk = build_session_key(event.source)
         runner.adapters[event.source.platform] = adapter
 
@@ -224,6 +225,7 @@ class TestBusySessionAck:
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
         assert "Steered" in content or "steer" in content.lower()
         assert "Interrupting" not in content
+        assert event.metadata["relay_owner_disposition"] == "absorbed"
 
     @pytest.mark.asyncio
     async def test_steer_mode_transcribes_voice_before_injection(self, monkeypatch):
@@ -272,6 +274,7 @@ class TestBusySessionAck:
         adapter = _make_adapter()
 
         event = _make_event(text="empty or rejected")
+        event.owner_id = "opaque-owner-queued"
         sk = build_session_key(event.source)
         runner.adapters[event.source.platform] = adapter
 
@@ -293,6 +296,7 @@ class TestBusySessionAck:
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
         assert "Queued for the next turn" in content
         assert "Steered" not in content
+        assert event.metadata["relay_owner_disposition"] == "queued"
 
     @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_pending(self):
@@ -344,6 +348,8 @@ class TestBusySessionAck:
 
         first = _evt("first message")
         second = _evt("second message")
+        first.owner_id = "opaque-owner-first"
+        second.owner_id = "opaque-owner-second"
         sk = build_session_key(first.source)
         runner.adapters[shared_platform] = adapter
 
@@ -362,6 +368,54 @@ class TestBusySessionAck:
         assert head.text == "first message"  # not "first message\nsecond message"
         overflow = runner._queued_events.get(sk, [])
         assert [e.text for e in overflow] == ["second message"]
+        assert first.metadata["relay_owner_disposition"] == "queued"
+        assert second.metadata["relay_owner_disposition"] == "queued"
+
+    @pytest.mark.asyncio
+    async def test_busy_media_head_is_queued_but_later_media_is_merged(self):
+        """The empty head becomes its own owner; an album addition does not."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._queued_events = {}
+        adapter = _make_adapter()
+        first = _make_event(text="first image")
+        first.message_type = MessageType.PHOTO
+        first.media_urls = ["/tmp/first.png"]
+        first.media_types = ["image/png"]
+        first.owner_id = "opaque-owner-media-head"
+        second = _make_event(text="second image")
+        second.message_type = MessageType.PHOTO
+        second.media_urls = ["/tmp/second.png"]
+        second.media_types = ["image/png"]
+        second.owner_id = "opaque-owner-media-merged"
+        second.source = first.source
+        sk = build_session_key(first.source)
+        runner.adapters[first.source.platform] = adapter
+
+        runner._queue_or_replace_pending_event(sk, first)
+        runner._queue_or_replace_pending_event(sk, second)
+
+        assert adapter._pending_messages[sk] is first
+        assert first.metadata["relay_owner_disposition"] == "queued"
+        assert second.metadata["relay_owner_disposition"] == "merged"
+        assert first.media_urls == ["/tmp/first.png", "/tmp/second.png"]
+
+    @pytest.mark.asyncio
+    async def test_queue_capacity_drop_is_an_explicit_negative_owner_disposition(self):
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+        event = _make_event(text="one too many")
+        event.owner_id = "opaque-owner-over-cap"
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        runner._queue_depth = MagicMock(return_value=runner._BUSY_QUEUE_MAX_PENDING)
+
+        runner._queue_or_replace_pending_event(sk, event)
+
+        assert event.metadata["relay_owner_disposition"] == "rejected"
+        assert event.metadata["relay_owner_disposition_reason"] == "queue_capacity"
+        assert sk not in adapter._pending_messages
 
 
     @pytest.mark.asyncio
@@ -469,5 +523,3 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
-
-

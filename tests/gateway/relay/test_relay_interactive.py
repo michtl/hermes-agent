@@ -25,10 +25,16 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 from gateway.relay.adapter import RelayAdapter
-from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from gateway.relay.descriptor import (
+    CONTRACT_VERSION,
+    OWNER_BOUND_INTERRUPT_ACK_CAPABILITY,
+    OWNER_BOUND_TURN_COMPLETION_CAPABILITY,
+    OWNER_BOUND_TURN_RECONCILIATION_CAPABILITY,
+    CapabilityDescriptor,
+)
 from gateway.relay.ws_transport import WebSocketRelayTransport
 from gateway.session import SessionSource
 
@@ -57,6 +63,11 @@ def make_desc(**kw) -> CapabilityDescriptor:
         markdown_dialect="markdown_v2",
         len_unit="utf16",
         supported_ops=FULL_OPS,
+        capabilities=(
+            OWNER_BOUND_INTERRUPT_ACK_CAPABILITY,
+            OWNER_BOUND_TURN_COMPLETION_CAPABILITY,
+            OWNER_BOUND_TURN_RECONCILIATION_CAPABILITY,
+        ),
     )
     base.update(kw)
     return CapabilityDescriptor(**base)
@@ -77,9 +88,13 @@ def _event(
         text=text,
         message_type=MessageType.COMMAND,
         source=SessionSource(
-            platform="telegram", chat_id=chat_id, chat_type="dm", user_id="u1"
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id,
+            chat_type="dm",
+            user_id="u1",
         ),
         prompt_response=prompt_response,
+        owner_id="opaque-owner:interactive",
     )
 
 
@@ -270,19 +285,24 @@ async def test_ws_prompt_redelivery_with_same_buffer_id_is_consumed_once_and_rea
     ack_attempts: list[str] = []
     committed_acks: list[str] = []
 
-    async def lose_first_ack(buffer_id: str) -> None:
+    async def lose_first_ack(frame: dict) -> None:
+        buffer_id = frame.get("bufferId")
         ack_attempts.append(buffer_id)
-        if len(ack_attempts) > 1:
-            committed_acks.append(buffer_id)
+        if len(ack_attempts) == 1:
+            raise RuntimeError("lose first ack")
+        committed_acks.append(buffer_id)
 
-    transport._send_inbound_ack = lose_first_ack
+    transport._runtime_epoch = "interactive-runtime"
+    transport._send = lose_first_ack
     frame = json.dumps(
         {
             "type": "inbound",
+            "delivery_id": "delivery-prompt-1",
             "bufferId": "buf-prompt-1",
             "event": {
                 "text": "/c0",
                 "message_type": "command",
+                "owner_id": "opaque-owner:interactive",
                 "source": {
                     "platform": "telegram",
                     "chat_id": "c1",
@@ -316,19 +336,22 @@ async def test_ws_malformed_prompt_dict_is_terminally_consumed(monkeypatch):
     transport._inbound = adapter._on_inbound
     acked: list[str] = []
 
-    async def capture_ack(buffer_id: str) -> None:
-        acked.append(buffer_id)
+    async def capture_ack(frame: dict) -> None:
+        acked.append(frame.get("bufferId"))
 
-    transport._send_inbound_ack = capture_ack
+    transport._runtime_epoch = "interactive-runtime"
+    transport._send = capture_ack
 
     await transport._handle_frame(
         json.dumps(
             {
                 "type": "inbound",
+                "delivery_id": "delivery-malformed-prompt",
                 "bufferId": "buf-malformed-prompt",
                 "event": {
                     "text": "/c0",
                     "message_type": "command",
+                    "owner_id": "opaque-owner:interactive",
                     "source": {
                         "platform": "telegram",
                         "chat_id": "c1",
@@ -397,13 +420,14 @@ def _reactable_event() -> MessageEvent:
         text="do something",
         message_type=MessageType.TEXT,
         source=SessionSource(
-            platform="discord",
+            platform=Platform.DISCORD,
             chat_id="ch1",
             chat_type="channel",
             user_id="u1",
             message_id="m42",
         ),
         message_id="m42",
+        owner_id="opaque-owner:reactable",
     )
 
 
@@ -542,16 +566,19 @@ async def test_ws_non_object_prompt_field_is_terminally_consumed_and_acked(
     transport._inbound = adapter._on_inbound
     acked: list[str] = []
 
-    async def capture_ack(buffer_id: str) -> None:
-        acked.append(buffer_id)
+    async def capture_ack(frame: dict) -> None:
+        acked.append(frame.get("bufferId"))
 
-    transport._send_inbound_ack = capture_ack
+    transport._runtime_epoch = "interactive-runtime"
+    transport._send = capture_ack
     await transport._handle_frame(json.dumps({
         "type": "inbound",
+        "delivery_id": "delivery-malformed-prompt-shape",
         "bufferId": "buf-malformed-prompt-shape",
         "event": {
             "text": "/c1",
             "message_type": "command",
+            "owner_id": "opaque-owner:interactive",
             "source": {
                 "platform": "telegram",
                 "chat_id": "c1",

@@ -32,6 +32,8 @@ from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import (
     CONTRACT_VERSION,
     OWNER_BOUND_INTERRUPT_ACK_CAPABILITY,
+    OWNER_BOUND_TURN_COMPLETION_CAPABILITY,
+    OWNER_BOUND_TURN_RECONCILIATION_CAPABILITY,
     CapabilityDescriptor,
 )
 from gateway.session import SessionSource
@@ -50,7 +52,11 @@ def _descriptor(platform: str, max_len: int, len_unit: str = "chars") -> Capabil
         supports_threads=False,
         markdown_dialect="plain",
         len_unit=len_unit,
-        capabilities=(OWNER_BOUND_INTERRUPT_ACK_CAPABILITY,),
+        capabilities=(
+            OWNER_BOUND_INTERRUPT_ACK_CAPABILITY,
+            OWNER_BOUND_TURN_COMPLETION_CAPABILITY,
+            OWNER_BOUND_TURN_RECONCILIATION_CAPABILITY,
+        ),
     )
 
 
@@ -158,4 +164,3 @@ async def test_adapter_resolves_per_chat_limits_from_inbound_platform():
 
 
 # ───────────────────── stream consumer integration ─────────────────────
-

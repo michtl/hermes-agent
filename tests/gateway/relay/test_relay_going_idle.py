@@ -18,6 +18,8 @@ import pytest_asyncio
 from gateway.relay.descriptor import (
     CONTRACT_VERSION,
     OWNER_BOUND_INTERRUPT_ACK_CAPABILITY,
+    OWNER_BOUND_TURN_COMPLETION_CAPABILITY,
+    OWNER_BOUND_TURN_RECONCILIATION_CAPABILITY,
 )
 from gateway.relay.ws_transport import WebSocketRelayTransport, WEBSOCKETS_AVAILABLE
 
@@ -37,7 +39,11 @@ DESCRIPTOR = {
     "supports_threads": True,
     "markdown_dialect": "discord",
     "len_unit": "chars",
-    "capabilities": [OWNER_BOUND_INTERRUPT_ACK_CAPABILITY],
+    "capabilities": [
+        OWNER_BOUND_INTERRUPT_ACK_CAPABILITY,
+        OWNER_BOUND_TURN_COMPLETION_CAPABILITY,
+        OWNER_BOUND_TURN_RECONCILIATION_CAPABILITY,
+    ],
 }
 
 
@@ -106,18 +112,22 @@ async def test_buffered_inbound_is_acked_after_handler(server):
     server._to_push = [
         {
             "type": "inbound",
+            "delivery_id": "delivery-buffered",
             "event": {
                 "text": "buffered",
                 "message_type": "text",
+                "owner_id": "opaque-owner-buffered",
                 "source": {"platform": "discord", "chat_id": "c1", "chat_type": "dm"},
             },
             "bufferId": "buf-42",
         },
         {
             "type": "inbound",
+            "delivery_id": "delivery-live",
             "event": {
                 "text": "live",
                 "message_type": "text",
+                "owner_id": "opaque-owner-live",
                 "source": {"platform": "discord", "chat_id": "c1", "chat_type": "dm"},
             },
         },
@@ -126,6 +136,12 @@ async def test_buffered_inbound_is_acked_after_handler(server):
 
     async def handler(ev):
         seen.append(ev.text)
+        return {
+            "disposition": "started",
+            "canonical_turn_owner_id": ev.owner_id,
+            "session_key": "agent:main:relay:dm:c1",
+            "chat_id": "c1",
+        }
 
     t = WebSocketRelayTransport(server.url, "discord", "appShared")
     t.set_inbound_handler(handler)
@@ -134,8 +150,9 @@ async def test_buffered_inbound_is_acked_after_handler(server):
         await t.handshake()
         await asyncio.sleep(0.1)
         assert "buffered" in seen and "live" in seen
-        # Only the buffered (bufferId) delivery was acked.
-        assert server.inbound_acks == ["buf-42"]
+        # v3 acknowledges every owner disposition; only the durable delivery
+        # carries the existing bufferId ledger cursor.
+        assert server.inbound_acks == ["buf-42", None]
     finally:
         await t.disconnect()
 
@@ -189,9 +206,11 @@ async def test_go_dormant_redials_on_wake_and_drains(server):
     server._to_push = [
         {
             "type": "inbound",
+            "delivery_id": "delivery-wake-1",
             "event": {
                 "text": "while-asleep",
                 "message_type": "text",
+                "owner_id": "opaque-owner-wake-1",
                 "source": {"platform": "discord", "chat_id": "c1", "chat_type": "dm"},
             },
             "bufferId": "buf-wake-1",
@@ -201,6 +220,12 @@ async def test_go_dormant_redials_on_wake_and_drains(server):
 
     async def handler(ev):
         seen.append(ev.text)
+        return {
+            "disposition": "started",
+            "canonical_turn_owner_id": ev.owner_id,
+            "session_key": "agent:main:relay:dm:c1",
+            "chat_id": "c1",
+        }
 
     t = WebSocketRelayTransport(
         server.url, "discord", "appShared", reconnect=True, reconnect_backoff_s=5.0
@@ -265,4 +290,3 @@ async def test_adapter_go_dormant_delegates_to_transport(server):
         assert transport._dormant is True
     finally:
         await adapter.disconnect()
-

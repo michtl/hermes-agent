@@ -671,13 +671,20 @@ async def test_interrupt_reader_stays_live_until_correlated_result_is_ready():
     async def send(frame: dict) -> None:
         sent.append(frame)
 
-    async def handle_inbound(event: MessageEvent) -> None:
+    async def handle_inbound(event: MessageEvent) -> dict:
         inbound.append(event.text)
+        return {
+            "disposition": "rejected",
+            "canonical_turn_owner_id": None,
+            "session_key": "agent:main:relay:dm:chanA",
+            "chat_id": "chanA",
+        }
 
     transport._descriptor = _desc()
     transport._interrupt_inbound_handler = handler
     transport._send = send
     transport._inbound = handle_inbound
+    transport._runtime_epoch = "interrupt-reader-runtime"
     loop = asyncio.get_running_loop()
     outbound = loop.create_future()
     transport._pending = {"outbound-1": outbound}
@@ -698,10 +705,12 @@ async def test_interrupt_reader_stays_live_until_correlated_result_is_ready():
     assert await asyncio.wait_for(outbound, timeout=0.1) == {"success": True}
     await transport._handle_frame(json.dumps({
         "type": "inbound",
+        "delivery_id": "delivery-during-stop",
         "bufferId": "buffer-during-stop",
         "event": {
             "text": "delivered while stop waits",
             "message_type": "text",
+            "owner_id": "opaque-owner:during-stop",
             "source": {
                 "platform": "relay", "chat_id": "chanA", "chat_type": "dm",
                 "user_id": "owner",
@@ -709,7 +718,18 @@ async def test_interrupt_reader_stays_live_until_correlated_result_is_ready():
         },
     }))
     assert inbound == ["delivered while stop waits"]
-    assert sent == [{"type": "inbound_ack", "bufferId": "buffer-during-stop"}]
+    assert sent == [{
+        "type": "inbound_ack",
+        "delivery_id": "delivery-during-stop",
+        "session_key": "agent:main:relay:dm:chanA",
+        "chat_id": "chanA",
+        "owner_id": "opaque-owner:during-stop",
+        "runtime_epoch": "interrupt-reader-runtime",
+        "disposition": "rejected",
+        "canonical_turn_owner_id": None,
+        "owner_state_seq": 0,
+        "bufferId": "buffer-during-stop",
+    }]
 
     release.set()
     for _ in range(50):
@@ -1192,11 +1212,11 @@ async def test_transport_handshake_rejects_legacy_descriptor_fail_closed():
         "descriptor": legacy.__dict__,
     }))
 
-    with pytest.raises(RuntimeError, match="contract v2 required"):
+    with pytest.raises(RuntimeError, match="contract v3 required"):
         await transport._descriptor_ready
     assert transport._descriptor is None
     assert transport._handshake_succeeded is False
-    assert closed == [(4406, "relay contract v2 required")]
+    assert closed == [(4406, "relay contract v3 required")]
 
 
 @pytest.mark.asyncio

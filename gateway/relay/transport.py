@@ -28,7 +28,7 @@ from gateway.platforms.base import MessageEvent
 from gateway.relay.descriptor import CapabilityDescriptor
 
 # Callback the transport invokes for each inbound normalized event.
-InboundHandler = Callable[[MessageEvent], Awaitable[None]]
+InboundHandler = Callable[[MessageEvent], Awaitable[Dict[str, Any]]]
 
 
 def normalize_owner_id(value: Any) -> Optional[str]:
@@ -114,6 +114,27 @@ class RelayTransport(Protocol):
         cancellation happens when the connector echoes an interrupt inbound
         (handled in Task 1.4).
         """
+        ...
+
+    async def send_turn_completed(
+        self,
+        session_key: str,
+        chat_id: str,
+        owner_id: str,
+        outcome: str,
+        next_owner_id: Optional[str] = None,
+        next_delivery_id: Optional[str] = None,
+    ) -> bool:
+        """Emit one owner-bound terminal-turn control frame.
+
+        Implementations must preserve the exact owner supplied by the inbound
+        event and bind it to their current runtime epoch. Returns ``False`` for
+        malformed/unnegotiated/duplicate completions.
+        """
+        ...
+
+    async def send_turn_started(self, event: MessageEvent) -> bool:
+        """Publish a queued inbound's authoritative transition to owner."""
         ...
 
     async def go_idle(self, timeout_s: float = 10.0) -> bool:

@@ -10350,6 +10350,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         adapter = self._adapter_for_source(event.source)
         if not adapter:
+            if getattr(event, "owner_id", None):
+                event.metadata["relay_owner_disposition"] = "rejected"
+                event.metadata["relay_owner_disposition_reason"] = "adapter_unavailable"
             return
         # #28503 — Previously this called ``merge_pending_message_event``
         # with the default ``merge_text=False``, which silently OVERWROTE
@@ -10399,9 +10402,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key,
                 self._BUSY_QUEUE_MAX_PENDING,
             )
+            if getattr(event, "owner_id", None):
+                event.metadata["relay_owner_disposition"] = "rejected"
+                event.metadata["relay_owner_disposition_reason"] = "queue_capacity"
             return
 
         self._enqueue_fifo(session_key, event, adapter)
+        # Both the empty head slot and overflow entries are later rebound to
+        # their own adapter guard and emit their own processing-start/completion
+        # lifecycle. Keep this delivery pending connector-side until that later
+        # ``started`` acknowledgement. Only an actual merge into the existing
+        # head may retire a distinct delivery as ``merged`` above.
+        if getattr(event, "owner_id", None):
+            event.metadata["relay_owner_disposition"] = "queued"
 
     async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
         """Return steerable text for a busy follow-up, transcribing voice first.
@@ -10455,6 +10468,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 event.source.platform.value if event.source.platform else "unknown",
                 session_key,
             )
+            if getattr(event, "owner_id", None):
+                event.metadata["relay_owner_disposition"] = "rejected"
+                event.metadata["relay_owner_disposition_reason"] = "unauthorized"
             return True  # handled (silently dropped); do not fall through
 
         effective_mode = self._effective_busy_input_mode(event.source)
@@ -10697,6 +10713,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # merge semantics for media.
         if not steered and not redirected:
             self._queue_or_replace_pending_event(session_key, event)
+        elif getattr(event, "owner_id", None):
+            event.metadata["relay_owner_disposition"] = "absorbed"
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"

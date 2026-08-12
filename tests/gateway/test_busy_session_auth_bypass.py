@@ -123,6 +123,7 @@ class TestBusySessionAuthBypass:
             chat_id="123",
             thread_id="thread-abc",  # same thread → same session_key
         )
+        intruder_event.owner_id = "opaque-owner-unauthorized"
 
         result = await GatewayRunner._handle_active_session_busy_message(
             runner, intruder_event, sk
@@ -136,6 +137,8 @@ class TestBusySessionAuthBypass:
         runner._running_agents[sk].interrupt.assert_not_called()
         # Must NOT send any acknowledgment to the channel
         adapter._send_with_retry.assert_not_called()
+        assert intruder_event.metadata["relay_owner_disposition"] == "rejected"
+        assert intruder_event.metadata["relay_owner_disposition_reason"] == "unauthorized"
 
 
     @pytest.mark.asyncio

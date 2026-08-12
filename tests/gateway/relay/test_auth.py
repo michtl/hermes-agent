@@ -26,6 +26,7 @@ from gateway.relay.auth import (
     make_token,
     make_upgrade_token,
     sign,
+    turn_state_scope_fingerprint,
     verify_delivery_signature,
     verify_signature,
     verify_token,
@@ -103,3 +104,7 @@ def test_python_make_token_matches_connector_byte_for_byte():
     assert make_token("gw-instance-1", _SECRET, 0) == _CONN_TOKEN
 
 
+def test_turn_state_scope_fingerprint_has_stable_domain_separated_bytes():
+    assert turn_state_scope_fingerprint(_SECRET, "session-A", "chat-B") == (
+        "05ffa08147a945c499415039aa92c1380b5a72abab18d320d91194fc6b5d7004"
+    )

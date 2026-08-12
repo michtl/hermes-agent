@@ -195,6 +195,7 @@ async def test_debounce_resets_timer_on_new_arrival():
     adapter._busy_text_debounce_seconds = 0.1
 
     first = _make_event("one")
+    first.owner_id = "opaque-owner-debounce-1"
     session_key = build_session_key(first.source)
     adapter._active_sessions[session_key] = asyncio.Event()
 
@@ -203,13 +204,17 @@ async def test_debounce_resets_timer_on_new_arrival():
     assert task1 is not None
     assert not task1.done()
 
-    await adapter.handle_message(_make_event("two"))
+    second = _make_event("two")
+    second.owner_id = "opaque-owner-debounce-2"
+    await adapter.handle_message(second)
     task2 = adapter._text_debounce[session_key].task
     assert task2 is not None
     assert task2 is not task1
     await asyncio.sleep(0)
     assert task1.cancelled() or task1.done()
     assert adapter._text_debounce[session_key].task is task2
+    assert first.metadata["relay_owner_disposition"] == "queued"
+    assert second.metadata["relay_owner_disposition"] == "merged"
 
     await adapter.handle_message(_make_event("three"))
     task3 = adapter._text_debounce[session_key].task
@@ -260,5 +265,4 @@ def test_command_messages_bypass_debounce_even_in_queue_mode():
     adapter = _make_adapter()
     assert not adapter._is_queue_text_debounce_candidate(_make_event(""))
     assert not adapter._is_queue_text_debounce_candidate(_make_event("/stop"))
-
 

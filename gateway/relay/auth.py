@@ -3,7 +3,7 @@
 The connector⇄gateway channel is authenticated because a gateway may be
 customer-managed and internet-exposed (see the connector repo
 ``docs/connector-gateway-auth-design.md``). This module is the **gateway half**
-of two HMAC schemes whose wire bytes must match the connector's TypeScript
+of three HMAC schemes whose wire bytes must match the connector's TypeScript
 exactly:
 
 1. **WS upgrade auth** (gateway → connector): the gateway presents
@@ -21,7 +21,12 @@ exactly:
    ``sig = HMAC_SHA256(f"{ts}.{body_json}", key).hexdigest()`` over the EXACT
    request body bytes, with a replay-window skew check.
 
-Both schemes use a **multi-secret verify list** (primary first, then a secondary
+3. **Turn-state scope fingerprint** (gateway → connector hello): raw retained
+   session/chat keys stay off a multiplexed hello. Both peers derive
+   ``HMAC_SHA256("relay-turn-state-v3\\0{session_key}\\0{chat_id}", secret)``
+   and the connector selects only its configured scope.
+
+The verification schemes use a **multi-secret verify list** (primary first, then a secondary
 during a rotation window), exactly like ``api/src/handlers/stats_oauth.ts`` — so
 a secret rotation doesn't invalidate outstanding tokens.
 
@@ -56,6 +61,11 @@ def _hmac_hex(payload: str, secret: str) -> str:
 def sign(payload: str, secret: str) -> str:
     """HMAC-SHA256 hex digest — the connector's ``sign`` (relayAuthToken.ts)."""
     return _hmac_hex(payload, secret)
+
+
+def turn_state_scope_fingerprint(secret: str, session_key: str, chat_id: str) -> str:
+    """Opaque authenticated scope selector for a v3 hello turn-state entry."""
+    return _hmac_hex(f"relay-turn-state-v3\0{session_key}\0{chat_id}", secret)
 
 
 def verify_signature(payload: str, sig_hex: str, secrets: Sequence[str]) -> bool:

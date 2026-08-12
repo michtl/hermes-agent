@@ -106,6 +106,7 @@ def transcode_to_ogg_opus(path: str, *, bitrate: str = "32k") -> "str | None":
         pass
     return None
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
+_TERMINAL_HOOK_TIMEOUT_SECONDS = 1.5
 # Delivery-time history is best-effort dedup metadata, not canonical state.
 # Keep this comfortably below the Discord heartbeat watchdog window and fail
 # open rather than withholding a legitimate attachment.
@@ -2856,6 +2857,8 @@ def merge_pending_message_event(
     """
     existing = pending_messages.get(session_key)
     if existing:
+        if getattr(event, "owner_id", None):
+            event.metadata["relay_owner_disposition"] = "merged"
         existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
         incoming_is_photo = event.message_type == MessageType.PHOTO
         existing_has_media = bool(existing.media_urls)
@@ -2898,6 +2901,8 @@ def merge_pending_message_event(
             return
 
     pending_messages[session_key] = event
+    if getattr(event, "owner_id", None):
+        event.metadata["relay_owner_disposition"] = "queued"
 
 
 # Error substrings that indicate a transient *connection* failure worth retrying.
@@ -5657,6 +5662,131 @@ class BasePlatformAdapter(ABC):
         except Exception as e:
             logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
 
+    async def _run_terminal_hook_bounded(
+        self, event: MessageEvent, outcome: ProcessingOutcome
+    ) -> bool:
+        """Run terminal lifecycle publication despite caller cancellation.
+
+        The hook owns network I/O for Relay, so it is shielded from the parent
+        task's cancellation but strictly bounded. A second cancellation waits
+        once more for the same shielded task; a timeout cancels the hook and
+        lets handoff continue honestly instead of blocking without limit.
+        Returns whether cancellation arrived while awaiting the hook; callers
+        propagate it only after their handoff/cleanup boundary is complete.
+        """
+        task = asyncio.create_task(
+            self._run_processing_hook("on_processing_complete", event, outcome)
+        )
+        cancelled = False
+        cancel_hook = False
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task), timeout=_TERMINAL_HOOK_TIMEOUT_SECONDS
+            )
+        except asyncio.CancelledError:
+            # A hook that cancels itself is a failed best-effort terminal send,
+            # not cancellation of the owning processing task. Distinguish it
+            # before deferring an actual outer cancellation.
+            if task.cancelled():
+                logger.warning("[%s] terminal processing hook was cancelled", self.name)
+                return False
+            cancelled = True
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(task), timeout=_TERMINAL_HOOK_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                cancel_hook = True
+            except asyncio.CancelledError:
+                # Either the hook cancelled internally while outer cancellation
+                # was deferred, or another outer cancel arrived. In both cases
+                # cleanup must continue; reap the hook if it is still running.
+                cancel_hook = not task.done()
+        except asyncio.TimeoutError:
+            cancel_hook = True
+            logger.warning("[%s] terminal processing hook timed out", self.name)
+        finally:
+            if cancel_hook and not task.done():
+                task.cancel()
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=0.25)
+                except asyncio.CancelledError:
+                    # Expected from the child cancellation. A repeated outer
+                    # cancellation is also deferred to the safe propagation
+                    # point below.
+                    if not task.done():
+                        cancelled = True
+                        task.cancel()
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[%s] terminal processing hook did not reap after cancellation",
+                        self.name,
+                    )
+            if task.done() and not task.cancelled():
+                try:
+                    task.exception()
+                except Exception:
+                    pass
+        return cancelled
+
+    async def _run_post_delivery_callback_bounded(self, callback: Any) -> bool:
+        """Run and reap one post-delivery callback without leaking cancellation.
+
+        Relay terminal publication and session handoff happen after this
+        callback.  An outer cancellation therefore stops the callback, but is
+        deferred until those owner-state and cleanup boundaries have run.
+        Returns whether such an outer cancellation was observed.
+        """
+        try:
+            result = callback()
+        except asyncio.CancelledError:
+            logger.warning("[%s] post-delivery callback cancelled itself", self.name)
+            return False
+        except Exception as exc:
+            logger.warning("[%s] post-delivery callback failed: %s", self.name, exc)
+            return False
+        if not inspect.isawaitable(result):
+            return False
+
+        task = asyncio.ensure_future(result)
+        cancelled = False
+        cancel_callback = False
+        try:
+            done, _pending = await asyncio.wait(
+                {task}, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
+            )
+            cancel_callback = not done
+            if cancel_callback:
+                logger.warning("[%s] post-delivery callback timed out", self.name)
+        except asyncio.CancelledError:
+            cancelled = True
+            cancel_callback = not task.done()
+        finally:
+            if cancel_callback and not task.done():
+                task.cancel()
+                deadline = asyncio.get_running_loop().time() + 0.25
+                while not task.done():
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        logger.warning(
+                            "[%s] post-delivery callback did not reap after cancellation",
+                            self.name,
+                        )
+                        break
+                    try:
+                        await asyncio.wait({task}, timeout=remaining)
+                    except asyncio.CancelledError:
+                        # Repeated outer cancellation is remembered but cannot
+                        # skip terminal publication or owner/session cleanup.
+                        cancelled = True
+                        task.cancel()
+            if task.done() and not task.cancelled():
+                try:
+                    task.exception()
+                except Exception:
+                    pass
+        return cancelled
+
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:
         """Return True if the error string looks like a transient network failure."""
@@ -5919,7 +6049,11 @@ class BasePlatformAdapter(ABC):
                 last_ts=now,
             )
             store[session_key] = state
+            if getattr(event, "owner_id", None):
+                event.metadata["relay_owner_disposition"] = "queued"
         else:
+            if getattr(event, "owner_id", None):
+                event.metadata["relay_owner_disposition"] = "merged"
             if event.text:
                 state.event.text = (
                     f"{state.event.text}\n{event.text}"
@@ -6148,6 +6282,9 @@ class BasePlatformAdapter(ABC):
             # hashable and do not support lifecycle callbacks.
             self._session_tasks.pop(session_key, None)
             self._release_session_guard(session_key, guard=guard)
+            if getattr(event, "owner_id", None):
+                event.metadata["relay_owner_disposition"] = "rejected"
+                event.metadata["relay_owner_disposition_reason"] = "task_capacity"
             return False
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
@@ -6554,6 +6691,9 @@ class BasePlatformAdapter(ABC):
         # Track delivery outcomes for the processing-complete hook
         delivery_attempted = False
         delivery_succeeded = False
+        terminal_outcome = ProcessingOutcome.FAILURE
+        terminal_hook_finished = False
+        terminal_hook_cancelled = False
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -7110,71 +7250,62 @@ class BasePlatformAdapter(ABC):
                 )
                 or ""
             )
-            await self._run_processing_hook(
-                "on_processing_complete",
-                event,
-                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE,
+            terminal_outcome = (
+                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE
             )
-
-            # The active drain owns debounce state. If a queue-mode timer has
-            # not fired yet, force-flush into _pending_messages here and let
-            # this task hand off the follow-up.
-            _handoff_guard = self._active_sessions.get(session_key)
-            if _handoff_guard is not None:
-                await self._wait_session_handoff_barrier(_handoff_guard)
-            await self._flush_text_debounce_now(session_key)
-
-            # Check if there's a pending message that was queued during our processing
-            if session_key in self._pending_messages:
-                pending_event = self._pending_messages.pop(session_key)
-                logger.debug("[%s] Processing queued follow-up message", self.name)
-                # Keep the _active_sessions entry live across the turn chain
-                # and only CLEAR the interrupt Event — do NOT delete the entry.
-                # If we deleted here, a concurrent inbound message arriving
-                # during the awaits below would pass the Level-1 guard, spawn
-                # its own _process_message_background, and run simultaneously
-                # with the recursive drain below.  Two agents on one
-                # session_key = duplicate responses, duplicate tool calls.
-                # Clearing the Event keeps the guard live so follow-ups take
-                # the busy-handler path as intended.
-                _active = self._active_sessions.get(session_key)
-                if _active is not None:
-                    _active.clear()
-                    self._bind_session_guard_event(_active, pending_event)
-                await _stop_typing_task()
-                if _active is not None:
-                    await self._wait_session_handoff_barrier(_active)
-                # Spawn a fresh task for the pending message instead of
-                # recursing.  Issue #17758: `await
-                # self._process_message_background(...)` here grew the
-                # call stack one frame per chained follow-up, and under
-                # sustained pending-queue activity the C stack would
-                # exhaust at ~2000 frames and SIGSEGV the process.
-                # Mirror the late-arrival drain pattern below: hand off
-                # to a new task and return so this frame can unwind.
-                drain_task = asyncio.create_task(
-                    self._process_message_background(pending_event, session_key)
+            if self.platform != Platform.RELAY:
+                # Preserve the established generic-platform ordering: reactions
+                # and the queued successor start before a potentially slow
+                # generation-owned post-delivery callback. Relay alone defers
+                # terminal publication because its completion frame must include
+                # the frozen successor owner and follow visible callback unwind.
+                await self._run_processing_hook(
+                    "on_processing_complete", event, terminal_outcome
                 )
-                # Hand ownership of the session to the drain task so
-                # stale-lock detection keeps working while it runs.
-                self._session_tasks[session_key] = drain_task
-                try:
-                    self._background_tasks.add(drain_task)
-                    drain_task.add_done_callback(self._background_tasks.discard)
-                except TypeError:
-                    # Tests stub create_task() with non-hashable sentinels; tolerate.
-                    pass
-                return  # Drain task owns the session now.
+                terminal_hook_finished = True
+                _handoff_guard = self._active_sessions.get(session_key)
+                if _handoff_guard is not None:
+                    await self._wait_session_handoff_barrier(_handoff_guard)
+                await self._flush_text_debounce_now(session_key)
+                pending_event = self._pending_messages.pop(session_key, None)
+                if pending_event is not None:
+                    logger.debug("[%s] Processing queued follow-up message", self.name)
+                    _active = self._active_sessions.get(session_key)
+                    if _active is not None:
+                        _active.clear()
+                        self._bind_session_guard_event(_active, pending_event)
+                    await _stop_typing_task()
+                    if _active is not None:
+                        await self._wait_session_handoff_barrier(_active)
+                    drain_task = asyncio.create_task(
+                        self._process_message_background(pending_event, session_key)
+                    )
+                    self._session_tasks[session_key] = drain_task
+                    try:
+                        self._background_tasks.add(drain_task)
+                        drain_task.add_done_callback(self._background_tasks.discard)
+                    except TypeError:
+                        pass
+                    return
                 
         except asyncio.CancelledError:
             current_task = asyncio.current_task()
-            outcome = ProcessingOutcome.CANCELLED
+            terminal_outcome = ProcessingOutcome.CANCELLED
             if current_task is None or current_task not in self._expected_cancelled_tasks:
-                outcome = ProcessingOutcome.FAILURE
-            await self._run_processing_hook("on_processing_complete", event, outcome)
+                terminal_outcome = ProcessingOutcome.FAILURE
+            if self.platform != Platform.RELAY:
+                await self._run_processing_hook(
+                    "on_processing_complete", event, terminal_outcome
+                )
+                terminal_hook_finished = True
             raise
-        except BaseException as e:
-            await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
+        except Exception as e:
+            terminal_outcome = ProcessingOutcome.FAILURE
+            if self.platform != Platform.RELAY:
+                await self._run_processing_hook(
+                    "on_processing_complete", event, terminal_outcome
+                )
+                terminal_hook_finished = True
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             # Send the error to the user so they aren't left with radio silence
             try:
@@ -7232,15 +7363,18 @@ class BasePlatformAdapter(ABC):
             else:
                 _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
             if callable(_post_cb):
-                try:
-                    _post_result = _post_cb()
-                    if inspect.isawaitable(_post_result):
-                        await asyncio.wait_for(
-                            _post_result,
-                            timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
-                        )
-                except (asyncio.TimeoutError, Exception):
-                    pass
+                post_delivery_cancelled = (
+                    await self._run_post_delivery_callback_bounded(_post_cb)
+                )
+                if post_delivery_cancelled:
+                    current_task = asyncio.current_task()
+                    terminal_outcome = ProcessingOutcome.CANCELLED
+                    if (
+                        current_task is None
+                        or current_task not in self._expected_cancelled_tasks
+                    ):
+                        terminal_outcome = ProcessingOutcome.FAILURE
+                    terminal_hook_cancelled = True
             # Some adapters keep platform-level typing tasks.  If callback
             # work or a late refresh recreated one, make one final bounded stop
             # before releasing the session guard.
@@ -7250,6 +7384,18 @@ class BasePlatformAdapter(ABC):
                 metadata=_thread_metadata,
                 stop_attempts=1,
             )
+            # Freeze the already-admitted queued head before terminal
+            # publication. Relay's owner-transition lock then snapshots this
+            # exact event into turn_completed before the successor guard binds.
+            await self._flush_text_debounce_now(session_key)
+            # Content projection and generation-owned post-delivery callbacks
+            # are part of this turn's visible unwind. Publish terminal state
+            # after both, but before any queued successor binds its guard.
+            if not terminal_hook_finished:
+                terminal_hook_cancelled = (
+                    await self._run_terminal_hook_bounded(event, terminal_outcome)
+                    or terminal_hook_cancelled
+                )
             # Final drain/release boundary: force-flush any timer that missed
             # the in-band drain before deciding whether the guard can clear.
             _handoff_guard = self._active_sessions.get(session_key)
@@ -7325,6 +7471,8 @@ class BasePlatformAdapter(ABC):
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
                     self._cleanup_finished_session_task(session_key, interrupt_event)
+            if terminal_hook_cancelled:
+                raise asyncio.CancelledError
     
     def _cleanup_finished_session_task(
         self, session_key: str, interrupt_event: Optional[asyncio.Event]
