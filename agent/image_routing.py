@@ -758,6 +758,10 @@ def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
         sniffed = _sniff_mime_from_bytes(raw)
         if sniffed:
             return sniffed
+        # Bytes are authoritative.  Falling back to an image-looking suffix
+        # here turns expired relay HTML/error documents into fake JPEG data
+        # URLs, poisoning every later turn that replays the stored message.
+        return "application/octet-stream"
     mime, _ = mimetypes.guess_type(str(path))
     if mime and mime.startswith("image/"):
         return mime
@@ -771,7 +775,7 @@ def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
         ".gif": "image/gif",
         ".webp": "image/webp",
         ".bmp": "image/bmp",
-    }.get(suffix, "image/jpeg")
+    }.get(suffix, "application/octet-stream")
 
 
 def _file_to_data_url(path: Path) -> Optional[str]:

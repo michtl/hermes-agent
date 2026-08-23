@@ -188,6 +188,16 @@ class RelayMediaClient:
                     data = resp.read(MEDIA_MAX_BYTES + 1)
                     if not data or len(data) > MEDIA_MAX_BYTES:
                         return None
+                    content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+                    html_head = data[:512].lstrip().lower()
+                    if content_type in {"text/html", "application/xhtml+xml"} or html_head.startswith(
+                        (b"<!doctype html", b"<html")
+                    ):
+                        logger.warning(
+                            "relay media download returned an HTML document instead of media: %s",
+                            url,
+                        )
+                        return None
                     # Extension: prefer the response's content-disposition /
                     # suggested name, fall back to the mime type, then .bin —
                     # vision/file tools sniff by extension.
@@ -198,8 +208,7 @@ class RelayMediaClient:
                             name = cd.split("filename=", 1)[1].strip().strip('"')
                     ext = Path(name).suffix if name else ""
                     if not ext:
-                        mime = (resp.headers.get("Content-Type") or "").split(";")[0]
-                        ext = mimetypes.guess_extension(mime) or ".bin"
+                        ext = mimetypes.guess_extension(content_type) or ".bin"
                     fd, tmp_path = tempfile.mkstemp(prefix="relay_media_", suffix=ext)
                     with os.fdopen(fd, "wb") as fh:
                         fh.write(data)

@@ -345,6 +345,22 @@ class TestLargeImageHandling:
         missing = tmp_path / "does_not_exist.png"
         assert _ir._file_to_data_url(missing) is None
 
+    def test_html_error_page_is_not_encoded_as_jpeg(self, tmp_path: Path):
+        """Expired relay media may be localized as an HTML error document.
+
+        A non-image file must never be mislabeled as ``image/jpeg`` and sent
+        back on every later model turn.
+        """
+        from agent import image_routing as _ir
+
+        expired = tmp_path / "relay_media_expired.html"
+        expired.write_text("<!doctype html><title>Expired</title>", encoding="utf-8")
+
+        assert _ir._file_to_data_url(expired) is None
+        parts, skipped = _ir.build_native_content_parts("keep the text", [str(expired)])
+        assert parts == [{"type": "text", "text": "keep the text"}]
+        assert skipped == [str(expired)]
+
     def test_build_native_parts_no_provider_kwarg(self, tmp_path: Path):
         """build_native_content_parts takes text + paths, no provider kwarg."""
         from agent import image_routing as _ir

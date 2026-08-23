@@ -25,6 +25,7 @@ except ModuleNotFoundError:
     pass
 
 import asyncio
+import base64
 import concurrent.futures
 import dataclasses
 import faulthandler
@@ -1568,6 +1569,68 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
     return bool(mt)
 
 
+def _sanitize_replayed_image_content(content: List[Any]) -> List[Any]:
+    """Drop or repair unsafe image parts before replaying persisted history.
+
+    Relay media references are authenticated, short-lived capability URLs and
+    therefore never safe replay inputs. Inline data URLs are retained only
+    when their decoded bytes have recognizable image magic; their declared
+    MIME is repaired from those authoritative bytes. Other content parts are
+    copied through unchanged.
+    """
+    from agent.image_routing import _sniff_mime_from_bytes
+
+    sanitized: List[Any] = []
+    for part in content:
+        if not isinstance(part, dict):
+            sanitized.append(part)
+            continue
+        part_type = part.get("type")
+        raw_url: Any = None
+        nested_url = False
+        if part_type == "image_url":
+            image_url = part.get("image_url")
+            if isinstance(image_url, dict):
+                raw_url = image_url.get("url")
+                nested_url = True
+            else:
+                raw_url = image_url
+        elif part_type == "input_image":
+            raw_url = part.get("image_url")
+        else:
+            sanitized.append(part)
+            continue
+
+        if not isinstance(raw_url, str) or not raw_url:
+            continue
+        if "/relay/media/" in raw_url:
+            continue
+        if not raw_url.startswith("data:image/"):
+            sanitized.append(part)
+            continue
+        try:
+            header, payload = raw_url.split(",", 1)
+            if ";base64" not in header.lower():
+                continue
+            decoded = base64.b64decode(payload, validate=True)
+        except (ValueError, TypeError):
+            continue
+        sniffed = _sniff_mime_from_bytes(decoded)
+        if not sniffed:
+            continue
+        repaired_url = f"data:{sniffed};base64,{payload}"
+        if repaired_url == raw_url:
+            sanitized.append(part)
+            continue
+        repaired = dict(part)
+        if nested_url:
+            repaired["image_url"] = dict(part["image_url"], url=repaired_url)
+        else:
+            repaired["image_url"] = repaired_url
+        sanitized.append(repaired)
+    return sanitized
+
+
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]],
     *,
@@ -1612,6 +1675,8 @@ def _build_gateway_agent_history(
             continue
 
         content = msg.get("content")
+        if isinstance(content, list):
+            content = _sanitize_replayed_image_content(content)
         if inject_timestamps and role == "user" and isinstance(content, str):
             content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
         if separate_observed_context and msg.get("observed") and role == "user" and content:
@@ -1626,6 +1691,8 @@ def _build_gateway_agent_history(
 
         if has_tool_calls or has_tool_call_id or is_tool_message:
             clean_msg = {k: v for k, v in msg.items() if k not in {"timestamp", "observed"}}
+            if isinstance(content, list):
+                clean_msg["content"] = content
             agent_history.append(clean_msg)
         elif content:
             # Strip gateway-injected auto-continue notes that were persisted
@@ -1673,6 +1740,23 @@ def _build_gateway_agent_history(
     return agent_history, observed_context
 
 
+def _sanitize_replayed_history_rows(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Apply replay image validation to a transcript without mutating it."""
+    sanitized: List[Dict[str, Any]] = []
+    for message in history:
+        if not isinstance(message, dict):
+            sanitized.append(message)
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            sanitized.append(message)
+            continue
+        clean_message = dict(message)
+        clean_message["content"] = _sanitize_replayed_image_content(content)
+        sanitized.append(clean_message)
+    return sanitized
+
+
 def _select_cached_agent_history(
     persisted_history: List[Dict[str, Any]],
     live_history: Any,
@@ -1703,7 +1787,7 @@ def _select_cached_agent_history(
             for message in live_history
         )
         if has_unpersisted_row:
-            return list(live_history)
+            return _sanitize_replayed_history_rows(list(live_history))
     return persisted_history
 
 

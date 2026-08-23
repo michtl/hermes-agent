@@ -229,3 +229,31 @@ async def test_download_sends_a_user_agent_on_every_request():
     # The re-host request must still carry its bearer (no regression).
     rehost_headers = seen[1]
     assert (rehost_headers.get("Authorization") or "").startswith("Bearer ")
+
+
+@pytest.mark.asyncio
+async def test_client_download_rejects_html_error_document(monkeypatch):
+    """A relay expiry/error page is not a downloadable attachment."""
+
+    class FakeResponse:
+        headers = {
+            "Content-Length": "41",
+            "Content-Type": "text/html; charset=utf-8",
+        }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return b"<!doctype html><html>expired</html>"
+
+    monkeypatch.setattr(
+        "gateway.relay.media.urllib.request.urlopen",
+        lambda *_args, **_kwargs: FakeResponse(),
+    )
+    client = RelayMediaClient("https://c.example", "gw1", "sec")
+
+    assert await client.download("https://c.example/relay/media/deadbeef") is None
