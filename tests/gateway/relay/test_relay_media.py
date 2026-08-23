@@ -176,3 +176,28 @@ async def test_client_upload_rejects_oversize_and_missing(tmp_path: Path):
     empty = tmp_path / "empty.bin"
     empty.write_bytes(b"")
     assert await c.upload(str(empty)) is None
+
+
+@pytest.mark.asyncio
+async def test_client_download_rejects_html_error_document(monkeypatch):
+    """A relay expiry/error page is not a downloadable attachment."""
+
+    class FakeResponse:
+        headers = {
+            "Content-Length": "41",
+            "Content-Type": "text/html; charset=utf-8",
+        }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return b"<!doctype html><html>expired</html>"
+
+    monkeypatch.setattr("gateway.relay.media.urllib.request.urlopen", lambda *_args, **_kwargs: FakeResponse())
+    client = RelayMediaClient("https://c.example", "gw1", "sec")
+
+    assert await client.download("https://c.example/relay/media/deadbeef") is None
