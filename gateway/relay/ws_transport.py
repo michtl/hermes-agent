@@ -1256,13 +1256,15 @@ class WebSocketRelayTransport:
             # NOW with the dict shape callers expect (never an exception on
             # the outbound path). list() snapshot: set_result wakes waiters
             # whose finally-pop would otherwise mutate the dict mid-iteration.
-            for _rid, fut in list(self._pending.items()):
+            pending = getattr(self, "_pending", None)
+            for _rid, fut in list((pending or {}).items()):
                 if not fut.done():
                     fut.set_result(
                         {"success": False, "error": "relay transport connection lost"}
                     )
             await self._cancel_interrupt_tasks()
-            self._pending.clear()
+            if pending is not None:
+                pending.clear()
 
     @staticmethod
     def _close_code_of(exc: BaseException) -> Optional[int]:
