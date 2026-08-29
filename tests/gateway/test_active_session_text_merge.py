@@ -205,7 +205,7 @@ async def test_debounce_resets_timer_on_new_arrival():
     assert not task1.done()
 
     second = _make_event("two")
-    second.owner_id = "opaque-owner-debounce-2"
+    second.owner_id = "opaque-owner-debounce-1"
     await adapter.handle_message(second)
     task2 = adapter._text_debounce[session_key].task
     assert task2 is not None
@@ -216,7 +216,9 @@ async def test_debounce_resets_timer_on_new_arrival():
     assert first.metadata["relay_owner_disposition"] == "queued"
     assert second.metadata["relay_owner_disposition"] == "merged"
 
-    await adapter.handle_message(_make_event("three"))
+    third = _make_event("three")
+    third.owner_id = "opaque-owner-debounce-1"
+    await adapter.handle_message(third)
     task3 = adapter._text_debounce[session_key].task
     assert task3 is not None
     assert task3 is not task2

@@ -372,8 +372,8 @@ class TestBusySessionAck:
         assert second.metadata["relay_owner_disposition"] == "queued"
 
     @pytest.mark.asyncio
-    async def test_busy_media_head_is_queued_but_later_media_is_merged(self):
-        """The empty head becomes its own owner; an album addition does not."""
+    async def test_busy_media_with_different_owner_replaces_stale_pending_head(self):
+        """A distinct relay owner must not inherit a stale album's media."""
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         runner._queued_events = {}
@@ -387,7 +387,7 @@ class TestBusySessionAck:
         second.message_type = MessageType.PHOTO
         second.media_urls = ["/tmp/second.png"]
         second.media_types = ["image/png"]
-        second.owner_id = "opaque-owner-media-merged"
+        second.owner_id = "opaque-owner-media-successor"
         second.source = first.source
         sk = build_session_key(first.source)
         runner.adapters[first.source.platform] = adapter
@@ -395,10 +395,10 @@ class TestBusySessionAck:
         runner._queue_or_replace_pending_event(sk, first)
         runner._queue_or_replace_pending_event(sk, second)
 
-        assert adapter._pending_messages[sk] is first
+        assert adapter._pending_messages[sk] is second
         assert first.metadata["relay_owner_disposition"] == "queued"
-        assert second.metadata["relay_owner_disposition"] == "merged"
-        assert first.media_urls == ["/tmp/first.png", "/tmp/second.png"]
+        assert second.metadata["relay_owner_disposition"] == "queued"
+        assert second.media_urls == ["/tmp/second.png"]
 
     @pytest.mark.asyncio
     async def test_queue_capacity_drop_is_an_explicit_negative_owner_disposition(self):

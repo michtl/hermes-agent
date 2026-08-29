@@ -140,7 +140,7 @@ def test_merge_pending_message_event_merges_text_and_photo_followups():
         source=source,
         media_urls=["/tmp/test.png"],
         media_types=["image/png"],
-        owner_id="opaque-owner-photo",
+        owner_id="opaque-owner-text",
     )
 
     merge_pending_message_event(pending, session_key, text_event, merge_text=True)
@@ -153,6 +153,79 @@ def test_merge_pending_message_event_merges_text_and_photo_followups():
     assert merged.media_types == ["image/png"]
     assert text_event.metadata["relay_owner_disposition"] == "queued"
     assert photo_event.metadata["relay_owner_disposition"] == "merged"
+
+
+def test_merge_pending_message_event_merges_native_photo_burst():
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="u1",
+    )
+    session_key = build_session_key(source)
+    first = MessageEvent(
+        text="first",
+        message_type=MessageType.PHOTO,
+        source=source,
+        media_urls=["/tmp/first.png"],
+        media_types=["image/png"],
+    )
+    second = MessageEvent(
+        text="second",
+        message_type=MessageType.PHOTO,
+        source=source,
+        media_urls=["/tmp/second.png"],
+        media_types=["image/png"],
+    )
+    pending = {session_key: first}
+
+    merge_pending_message_event(pending, session_key, second)
+
+    assert pending[session_key] is first
+    assert first.media_urls == ["/tmp/first.png", "/tmp/second.png"]
+
+
+@pytest.mark.parametrize(
+    ("incoming_type", "incoming_urls"),
+    [
+        (MessageType.PHOTO, ["/tmp/current.png"]),
+        (MessageType.TEXT, []),
+    ],
+)
+def test_merge_pending_message_event_isolates_different_relay_owners(
+    incoming_type, incoming_urls
+):
+    """A stale relay owner must never donate media to a replacement owner."""
+    source = SessionSource(
+        platform=Platform.RELAY,
+        chat_id="mission-control",
+        chat_type="dm",
+        user_id="u1",
+    )
+    session_key = build_session_key(source)
+    old_owner_event = MessageEvent(
+        text="old album",
+        message_type=MessageType.PHOTO,
+        source=source,
+        media_urls=["/tmp/old-1.png", "/tmp/old-2.png"],
+        media_types=["image/png", "image/png"],
+        owner_id="relay-owner-A",
+    )
+    current_owner_event = MessageEvent(
+        text="current turn",
+        message_type=incoming_type,
+        source=source,
+        media_urls=incoming_urls,
+        media_types=["image/png"] * len(incoming_urls),
+        owner_id="relay-owner-B",
+    )
+    pending = {session_key: old_owner_event}
+
+    merge_pending_message_event(pending, session_key, current_owner_event)
+
+    assert pending[session_key] is current_owner_event
+    assert pending[session_key].media_urls == incoming_urls
+    assert current_owner_event.metadata["relay_owner_disposition"] == "queued"
 
 
 @pytest.mark.asyncio

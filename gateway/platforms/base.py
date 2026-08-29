@@ -2837,6 +2837,24 @@ def _invalidate_pending_stt_cache(event: MessageEvent) -> None:
             delattr(event, attr)
 
 
+def _pending_event_owner_id(event: MessageEvent) -> Optional[str]:
+    """Return a relay owner identity, treating absent/malformed values as native."""
+    owner_id = getattr(event, "owner_id", None)
+    return owner_id if isinstance(owner_id, str) and owner_id else None
+
+
+def _pending_events_can_merge(existing: MessageEvent, event: MessageEvent) -> bool:
+    """Whether two pending events can share one future model turn.
+
+    Native events have no owner and retain album/burst merge behavior. Relay
+    events are only merge-compatible when they carry the same opaque owner:
+    ``merged`` tells the connector that the incoming delivery will not receive
+    a turn of its own, so accepting a distinct owner here would rematerialize
+    the existing owner's media in the wrong turn.
+    """
+    return _pending_event_owner_id(existing) == _pending_event_owner_id(event)
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
@@ -2857,6 +2875,17 @@ def merge_pending_message_event(
     """
     existing = pending_messages.get(session_key)
     if existing:
+        if not _pending_events_can_merge(existing, event):
+            # A pending relay event is the next owner-bound handoff.  A newer
+            # owner cannot be acknowledged as ``merged`` into that event: it
+            # needs its own later ``started`` lifecycle and must not inherit
+            # the old event's localized attachments.  Replacing the single
+            # pending head keeps the incoming owner as that successor; the
+            # stale owner cannot be revived as this turn's media.
+            pending_messages[session_key] = event
+            if _pending_event_owner_id(event) is not None:
+                event.metadata["relay_owner_disposition"] = "queued"
+            return
         if getattr(event, "owner_id", None):
             event.metadata["relay_owner_disposition"] = "merged"
         existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
@@ -5989,8 +6018,9 @@ class BasePlatformAdapter(ABC):
             )
         return result
 
-    def _can_merge_text_debounce_events(self, existing: MessageEvent, event: MessageEvent) -> bool:
-        """Return True when two text debounce events came from the same sender."""
+    @staticmethod
+    def _same_debounce_sender(existing: MessageEvent, event: MessageEvent) -> bool:
+        """Return whether two text debounce events came from the same sender."""
 
         def _identity(candidate: MessageEvent) -> tuple[str, ...] | None:
             source = getattr(candidate, "source", None)
@@ -6007,6 +6037,13 @@ class BasePlatformAdapter(ABC):
         existing_sender = _identity(existing)
         incoming_sender = _identity(event)
         return existing_sender is not None and existing_sender == incoming_sender
+
+    def _can_merge_text_debounce_events(self, existing: MessageEvent, event: MessageEvent) -> bool:
+        """Return whether two debounce events can share one pending turn."""
+        return (
+            self._same_debounce_sender(existing, event)
+            and _pending_events_can_merge(existing, event)
+        )
 
     def _text_debounce_delay(self, session_key: str) -> float:
         """Return bounded busy-text debounce delay for ``session_key``."""
@@ -6102,7 +6139,7 @@ class BasePlatformAdapter(ABC):
         existing_pending = self._pending_messages.get(session_key)
         if (
             existing_pending is not None
-            and not self._can_merge_text_debounce_events(existing_pending, state.event)
+            and not self._same_debounce_sender(existing_pending, state.event)
         ):
             return False
 
