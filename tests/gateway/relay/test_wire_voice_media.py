@@ -283,11 +283,16 @@ class TestParallelArrayLengthInvariant:
         from gateway.run import _event_media_type_at
 
         untyped = _event_from_wire(
-            _wire_event("image", media_urls=["https://x/old1.png", "https://x/old2.png"])
+            _wire_event(
+                "image",
+                owner_id="turn-1",
+                media_urls=["https://x/old1.png", "https://x/old2.png"],
+            )
         )
         typed = _event_from_wire(
             _wire_event(
                 "document",
+                owner_id="turn-1",
                 media=[{"url": "https://x/new.pdf", "mime": "application/pdf"}],
                 media_urls=["https://x/new.pdf"],
             )
