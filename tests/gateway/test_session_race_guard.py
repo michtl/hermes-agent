@@ -185,6 +185,59 @@ def test_merge_pending_message_event_merges_native_photo_burst():
     assert first.media_urls == ["/tmp/first.png", "/tmp/second.png"]
 
 
+@pytest.mark.parametrize("incoming_type", [MessageType.PHOTO, MessageType.TEXT])
+@pytest.mark.parametrize(
+    ("head_owner", "incoming_owner"),
+    [
+        ("relay-owner", None),
+        (None, "relay-owner"),
+        ("relay-owner", {"malformed": True}),
+        ({"malformed": True}, "relay-owner"),
+    ],
+)
+def test_merge_pending_message_event_rejects_mixed_relay_ownership(
+    head_owner, incoming_owner, incoming_type
+):
+    """Relay provenance, not owner shape, makes mixed ownership fail closed."""
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="mission-control",
+        chat_type="dm",
+        user_id="u1",
+        delivered_via_upstream_relay=True,
+    )
+    session_key = build_session_key(source)
+    head = MessageEvent(
+        text="head",
+        message_type=MessageType.PHOTO,
+        source=source,
+        media_urls=["/tmp/head.png"],
+        media_types=["image/png"],
+        owner_id=head_owner,
+    )
+    incoming_urls = ["/tmp/incoming.png"] if incoming_type == MessageType.PHOTO else []
+    incoming = MessageEvent(
+        text="incoming",
+        message_type=incoming_type,
+        source=source,
+        media_urls=incoming_urls,
+        media_types=["image/png"] * len(incoming_urls),
+        owner_id=incoming_owner,
+    )
+    pending = {session_key: head}
+
+    merged = merge_pending_message_event(
+        pending, session_key, incoming, merge_text=True
+    )
+
+    assert merged is False
+    assert pending[session_key] is head
+    assert head.text == "head"
+    assert head.media_urls == ["/tmp/head.png"]
+    assert incoming.text == "incoming"
+    assert incoming.media_urls == incoming_urls
+
+
 @pytest.mark.parametrize(
     ("incoming_type", "incoming_urls"),
     [

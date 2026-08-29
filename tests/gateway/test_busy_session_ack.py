@@ -402,6 +402,44 @@ class TestBusySessionAck:
         assert second.media_urls == ["/tmp/second.png"]
         assert runner._queued_events[sk] == [second]
 
+    @pytest.mark.parametrize("successor_type", [MessageType.PHOTO, MessageType.TEXT])
+    @pytest.mark.parametrize(
+        ("head_owner", "successor_owner"),
+        [("opaque-owner-head", None), (None, "opaque-owner-successor")],
+    )
+    def test_busy_mixed_relay_ownership_uses_fifo(
+        self, head_owner, successor_owner, successor_type
+    ):
+        """Owned/ownerless Relay traffic cannot share the pending head."""
+        runner, _sentinel = _make_runner()
+        runner._queued_events = {}
+        adapter = _make_adapter()
+        head = _make_event(text="head")
+        head.source.delivered_via_upstream_relay = True
+        head.message_type = MessageType.PHOTO
+        head.media_urls = ["/tmp/head.png"]
+        head.media_types = ["image/png"]
+        head.owner_id = head_owner
+        successor = _make_event(text="successor")
+        successor.source = head.source
+        successor.message_type = successor_type
+        successor.media_urls = (
+            ["/tmp/successor.png"] if successor_type == MessageType.PHOTO else []
+        )
+        successor.media_types = ["image/png"] * len(successor.media_urls)
+        successor.owner_id = successor_owner
+        sk = build_session_key(head.source)
+        runner.adapters[Platform.RELAY] = adapter
+
+        runner._queue_or_replace_pending_event(sk, head)
+        runner._queue_or_replace_pending_event(sk, successor)
+
+        assert adapter._pending_messages[sk] is head
+        assert head.text == "head"
+        assert head.media_urls == ["/tmp/head.png"]
+        assert successor.text == "successor"
+        assert runner._queued_events[sk] == [successor]
+
     @pytest.mark.asyncio
     async def test_busy_text_only_owner_successor_keeps_media_empty(self):
         """A text-only successor must not inherit the queued owner's media."""

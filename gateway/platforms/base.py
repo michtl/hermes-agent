@@ -2838,9 +2838,17 @@ def _invalidate_pending_stt_cache(event: MessageEvent) -> None:
 
 
 def _pending_event_owner_id(event: MessageEvent) -> Optional[str]:
-    """Return a relay owner identity, treating absent/malformed values as native."""
+    """Return a valid non-empty opaque relay owner identity, if present."""
     owner_id = getattr(event, "owner_id", None)
     return owner_id if isinstance(owner_id, str) and owner_id else None
+
+
+def _pending_event_is_relay(event: MessageEvent) -> bool:
+    """Identify relay provenance without trusting the owner field."""
+    source = getattr(event, "source", None)
+    return bool(getattr(source, "delivered_via_upstream_relay", False)) or (
+        _platform_name(getattr(source, "platform", None)) == "relay"
+    )
 
 
 def _pending_events_can_merge(existing: MessageEvent, event: MessageEvent) -> bool:
@@ -2852,7 +2860,15 @@ def _pending_events_can_merge(existing: MessageEvent, event: MessageEvent) -> bo
     a turn of its own, so accepting a distinct owner here would rematerialize
     the existing owner's media in the wrong turn.
     """
-    return _pending_event_owner_id(existing) == _pending_event_owner_id(event)
+    existing_owner = _pending_event_owner_id(existing)
+    incoming_owner = _pending_event_owner_id(event)
+    if _pending_event_is_relay(existing) or _pending_event_is_relay(event):
+        return (
+            existing_owner is not None
+            and incoming_owner is not None
+            and existing_owner == incoming_owner
+        )
+    return existing_owner == incoming_owner
 
 
 def merge_pending_message_event(
@@ -2875,13 +2891,7 @@ def merge_pending_message_event(
     """
     existing = pending_messages.get(session_key)
     if existing:
-        existing_owner = _pending_event_owner_id(existing)
-        incoming_owner = _pending_event_owner_id(event)
-        if (
-            existing_owner is not None
-            and incoming_owner is not None
-            and existing_owner != incoming_owner
-        ):
+        if not _pending_events_can_merge(existing, event):
             # The pending head has already been acknowledged as queued.  It
             # must remain the next handoff owner; callers with a queue context
             # route the incoming owner into GatewayRunner's bounded FIFO.
