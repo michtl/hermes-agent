@@ -195,7 +195,7 @@ def test_merge_pending_message_event_merges_native_photo_burst():
 def test_merge_pending_message_event_isolates_different_relay_owners(
     incoming_type, incoming_urls
 ):
-    """A stale relay owner must never donate media to a replacement owner."""
+    """A different relay owner cannot displace the already queued head."""
     source = SessionSource(
         platform=Platform.RELAY,
         chat_id="mission-control",
@@ -221,11 +221,13 @@ def test_merge_pending_message_event_isolates_different_relay_owners(
     )
     pending = {session_key: old_owner_event}
 
-    merge_pending_message_event(pending, session_key, current_owner_event)
+    merged = merge_pending_message_event(pending, session_key, current_owner_event)
 
-    assert pending[session_key] is current_owner_event
-    assert pending[session_key].media_urls == incoming_urls
-    assert current_owner_event.metadata["relay_owner_disposition"] == "queued"
+    assert merged is False
+    assert pending[session_key] is old_owner_event
+    assert old_owner_event.media_urls == ["/tmp/old-1.png", "/tmp/old-2.png"]
+    assert current_owner_event.media_urls == incoming_urls
+    assert "relay_owner_disposition" not in current_owner_event.metadata
 
 
 @pytest.mark.asyncio

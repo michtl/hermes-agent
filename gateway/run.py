@@ -10431,6 +10431,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # still small enough to never threaten memory.
     _BUSY_QUEUE_MAX_PENDING = 32
 
+    def _enqueue_pending_event_or_reject(
+        self,
+        session_key: str,
+        event: MessageEvent,
+        adapter: Any,
+    ) -> bool:
+        """Append one distinct-owner successor or reject only that successor."""
+        if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
+            logger.warning(
+                "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
+                session_key,
+                self._BUSY_QUEUE_MAX_PENDING,
+            )
+            if getattr(event, "owner_id", None):
+                event.metadata["relay_owner_disposition"] = "rejected"
+                event.metadata["relay_owner_disposition_reason"] = "queue_capacity"
+            return False
+
+        self._enqueue_fifo(session_key, event, adapter)
+        if getattr(event, "owner_id", None):
+            event.metadata["relay_owner_disposition"] = "queued"
+        return True
+
+    def _merge_or_enqueue_pending_event(
+        self,
+        session_key: str,
+        event: MessageEvent,
+        *,
+        merge_text: bool = False,
+    ) -> bool:
+        """Keep a pending owner head or enqueue its distinct-owner successor."""
+        adapter = self._adapter_for_source(event.source)
+        if not adapter:
+            if getattr(event, "owner_id", None):
+                event.metadata["relay_owner_disposition"] = "rejected"
+                event.metadata["relay_owner_disposition_reason"] = "adapter_unavailable"
+            return False
+        if merge_pending_message_event(
+            adapter._pending_messages, session_key, event, merge_text=merge_text
+        ):
+            return True
+        return self._enqueue_pending_event_or_reject(session_key, event, adapter)
+
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         adapter = self._adapter_for_source(event.source)
         if not adapter:
@@ -10472,33 +10515,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             or bool(getattr(event, "media_urls", None))
         ):
             # Preserve photo-burst / media-merge semantics for the head slot.
-            merge_pending_message_event(
-                adapter._pending_messages,
-                session_key,
-                event,
-                merge_text=event.message_type == MessageType.TEXT,
+            self._merge_or_enqueue_pending_event(
+                session_key, event, merge_text=event.message_type == MessageType.TEXT
             )
             return
 
-        if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
-            logger.warning(
-                "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
-                session_key,
-                self._BUSY_QUEUE_MAX_PENDING,
-            )
-            if getattr(event, "owner_id", None):
-                event.metadata["relay_owner_disposition"] = "rejected"
-                event.metadata["relay_owner_disposition_reason"] = "queue_capacity"
-            return
-
-        self._enqueue_fifo(session_key, event, adapter)
-        # Both the empty head slot and overflow entries are later rebound to
-        # their own adapter guard and emit their own processing-start/completion
-        # lifecycle. Keep this delivery pending connector-side until that later
-        # ``started`` acknowledgement. Only an actual merge into the existing
-        # head may retire a distinct delivery as ``merged`` above.
-        if getattr(event, "owner_id", None):
-            event.metadata["relay_owner_disposition"] = "queued"
+        self._enqueue_pending_event_or_reject(session_key, event, adapter)
 
     async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
         """Return steerable text for a busy follow-up, transcribing voice first.
@@ -18150,7 +18172,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
                 adapter = self._adapter_for_source(source)
                 if adapter:
-                    merge_pending_message_event(adapter._pending_messages, _quick_key, event)
+                    self._merge_or_enqueue_pending_event(_quick_key, event)
                 return None
 
             effective_busy_input_mode = self._effective_busy_input_mode(source)
@@ -18176,11 +18198,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if effective_busy_input_mode == "queue":
                         self._enqueue_fifo(_quick_key, event, adapter)
                     else:
-                        merge_pending_message_event(
-                            adapter._pending_messages,
-                            _quick_key,
-                            event,
-                            merge_text=True,
+                        self._merge_or_enqueue_pending_event(
+                            _quick_key, event, merge_text=True
                         )
                 return None
 
@@ -18197,11 +18216,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # agent starts.
                 adapter = self._adapter_for_source(source)
                 if adapter:
-                    merge_pending_message_event(
-                        adapter._pending_messages,
-                        _quick_key,
-                        event,
-                        merge_text=True,
+                    self._merge_or_enqueue_pending_event(
+                        _quick_key, event, merge_text=True
                     )
                 return None
             if self._draining:
@@ -30829,7 +30845,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     adapter = self._adapter_for_source(source)
                     if adapter and pending_event:
-                        merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+                        self._merge_or_enqueue_pending_event(session_key, pending_event)
                     elif adapter and hasattr(adapter, 'queue_message'):
                         adapter.queue_message(session_key, pending)
                     return result_holder[0] or {"final_response": response, "messages": history}

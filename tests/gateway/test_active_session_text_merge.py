@@ -229,6 +229,35 @@ async def test_debounce_resets_timer_on_new_arrival():
 
 
 @pytest.mark.asyncio
+async def test_debounce_different_relay_owner_uses_runner_fifo_not_absorbed():
+    """Same-sender relay owners cannot be silently lost during debounce."""
+    from gateway.run import GatewayRunner
+
+    adapter = _make_adapter()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._adapter_for_source = lambda _source: adapter
+    adapter.gateway_runner = runner
+    adapter._busy_text_debounce_seconds = 0.01
+    first = _make_event("first")
+    first.owner_id = "opaque-owner-debounce-A"
+    second = _make_event("second")
+    second.owner_id = "opaque-owner-debounce-B"
+    session_key = build_session_key(first.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter.handle_message(first)
+    await adapter.handle_message(second)
+    await asyncio.sleep(0.05)
+
+    assert adapter._pending_messages[session_key] is first
+    assert runner._queued_events[session_key] == [second]
+    assert first.metadata["relay_owner_disposition"] == "queued"
+    assert second.metadata["relay_owner_disposition"] == "queued"
+    assert second.metadata["relay_owner_disposition"] != "absorbed"
+
+
+@pytest.mark.asyncio
 async def test_control_and_clarify_messages_bypass_text_debounce():
     adapter = _make_adapter()
     started: list[str] = []

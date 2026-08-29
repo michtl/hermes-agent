@@ -20,6 +20,7 @@ COMPLETION_CAPABILITY = "owner-bound-turn-completion"
 RECONCILIATION_CAPABILITY = "owner-bound-turn-reconciliation"
 OWNER_1 = "relay-turn-00000000-0000-4000-8000-000000000001"
 OWNER_2 = "relay-turn-00000000-0000-4000-8000-000000000002"
+OWNER_3 = "relay-turn-00000000-0000-4000-8000-000000000003"
 
 
 def _descriptor(*, supported_ops: tuple[str, ...] = ("send", "edit", "typing", "prompt")) -> CapabilityDescriptor:
@@ -618,6 +619,123 @@ async def test_queued_handoff_completes_owner_n_before_owner_n_plus_one_binds() 
     assert [item["owner_id"] for item in stub.turn_completions] == [OWNER_1, OWNER_2]
     assert stub.turn_completions[0]["next_owner_id"] == OWNER_2
     assert stub.turn_completions[0]["next_delivery_id"] == "delivery-owner-2"
+
+
+@pytest.mark.asyncio
+async def test_distinct_owner_media_handoff_preserves_fifo_and_owner_lifecycles() -> None:
+    """X hands off A, then A hands off B; neither owner nor media is orphaned."""
+    from gateway.run import GatewayRunner
+
+    stub = StubConnector(_descriptor())
+    adapter = RelayAdapter(
+        PlatformConfig(typing_indicator=False), _descriptor(), transport=stub
+    )
+    await adapter.connect()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.RELAY: adapter}
+    runner._adapter_for_source = lambda _source: adapter
+    adapter.gateway_runner = runner
+    order: list[str] = []
+    x_started = asyncio.Event()
+    release_x = asyncio.Event()
+
+    async def handler(event):
+        order.append(f"handler:{event.owner_id}")
+        if event.owner_id == OWNER_1:
+            x_started.set()
+            await release_x.wait()
+        elif event.owner_id == OWNER_2:
+            # The runner's drain promotes B before A's relay-completion hook
+            # snapshots its successor owner.
+            next_event = runner._promote_queued_event(session_key, adapter, None)
+            if next_event is not None:
+                adapter._pending_messages[session_key] = next_event
+        return None
+
+    adapter.set_message_handler(handler)
+    current = _event(OWNER_1, "active X")
+    pending_a = _event(OWNER_2, "old album")
+    pending_a.message_type = MessageType.PHOTO
+    pending_a.media_urls = ["/tmp/a-old-1.png", "/tmp/a-old-2.png"]
+    pending_a.media_types = ["image/png", "image/png"]
+    pending_b = _event(OWNER_3, "new image")
+    pending_b.message_type = MessageType.PHOTO
+    pending_b.media_urls = ["/tmp/b-new.png"]
+    pending_b.media_types = ["image/png"]
+    session_key = build_session_key(current.source)
+    for event, delivery_id in ((pending_a, "delivery-a"), (pending_b, "delivery-b")):
+        event.metadata.update({
+            "relay_delivery_id": delivery_id,
+            "relay_session_key": session_key,
+            "relay_chat_id": "mission-control",
+        })
+
+    task = asyncio.create_task(adapter._process_message_background(current, session_key))
+    adapter._session_tasks[session_key] = task
+    await asyncio.wait_for(x_started.wait(), timeout=0.5)
+    adapter._pending_messages[session_key] = pending_a
+    pending_a.metadata["relay_owner_disposition"] = "queued"
+    runner._queue_or_replace_pending_event(session_key, pending_b)
+
+    assert adapter._pending_messages[session_key] is pending_a
+    assert pending_a.media_urls == ["/tmp/a-old-1.png", "/tmp/a-old-2.png"]
+    assert pending_b.media_urls == ["/tmp/b-new.png"]
+    assert runner._queued_events[session_key] == [pending_b]
+    assert pending_b.metadata["relay_owner_disposition"] == "queued"
+
+    release_x.set()
+    for _ in range(100):
+        if len(stub.turn_completions) == 3:
+            break
+        await asyncio.sleep(0.01)
+
+    assert [item["owner_id"] for item in stub.turn_completions] == [
+        OWNER_1,
+        OWNER_2,
+        OWNER_3,
+    ]
+    assert stub.turn_completions[0]["next_owner_id"] == OWNER_2
+    assert stub.turn_completions[1]["next_owner_id"] == OWNER_3
+    assert stub.turn_starts == [OWNER_1, OWNER_2, OWNER_3]
+    assert order == [f"handler:{OWNER_1}", f"handler:{OWNER_2}", f"handler:{OWNER_3}"]
+
+
+@pytest.mark.asyncio
+async def test_debounce_owner_conflict_is_queued_not_relay_absorbed() -> None:
+    """Relay inbound acknowledgement must reflect the FIFO successor owner."""
+    from gateway.run import GatewayRunner
+
+    stub = StubConnector(_descriptor())
+    adapter = RelayAdapter(
+        PlatformConfig(typing_indicator=False), _descriptor(), transport=stub
+    )
+    await adapter.connect()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.RELAY: adapter}
+    runner._adapter_for_source = lambda _source: adapter
+    adapter.gateway_runner = runner
+    adapter._busy_text_mode = "queue"
+    adapter._busy_text_debounce_seconds = 0.01
+
+    async def handler(_event):
+        return None
+
+    adapter.set_message_handler(handler)
+    first = _event(OWNER_1, "first pending")
+    second = _event(OWNER_2, "same sender, new owner")
+    session_key = build_session_key(first.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+    adapter._pending_messages[session_key] = first
+    first.metadata["relay_owner_disposition"] = "queued"
+
+    result = await adapter._on_inbound(second)
+    await asyncio.sleep(0.05)
+
+    assert result["disposition"] == "queued"
+    assert result["disposition"] != "absorbed"
+    assert adapter._pending_messages[session_key] is first
+    assert runner._queued_events[session_key] == [second]
+    assert second.metadata["relay_owner_disposition"] == "queued"
 
 
 @pytest.mark.asyncio

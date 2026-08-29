@@ -2861,7 +2861,7 @@ def merge_pending_message_event(
     event: MessageEvent,
     *,
     merge_text: bool = False,
-) -> None:
+) -> bool:
     """Store or merge a pending event for a session.
 
     Photo bursts/albums often arrive as multiple near-simultaneous PHOTO
@@ -2875,17 +2875,17 @@ def merge_pending_message_event(
     """
     existing = pending_messages.get(session_key)
     if existing:
-        if not _pending_events_can_merge(existing, event):
-            # A pending relay event is the next owner-bound handoff.  A newer
-            # owner cannot be acknowledged as ``merged`` into that event: it
-            # needs its own later ``started`` lifecycle and must not inherit
-            # the old event's localized attachments.  Replacing the single
-            # pending head keeps the incoming owner as that successor; the
-            # stale owner cannot be revived as this turn's media.
-            pending_messages[session_key] = event
-            if _pending_event_owner_id(event) is not None:
-                event.metadata["relay_owner_disposition"] = "queued"
-            return
+        existing_owner = _pending_event_owner_id(existing)
+        incoming_owner = _pending_event_owner_id(event)
+        if (
+            existing_owner is not None
+            and incoming_owner is not None
+            and existing_owner != incoming_owner
+        ):
+            # The pending head has already been acknowledged as queued.  It
+            # must remain the next handoff owner; callers with a queue context
+            # route the incoming owner into GatewayRunner's bounded FIFO.
+            return False
         if getattr(event, "owner_id", None):
             event.metadata["relay_owner_disposition"] = "merged"
         existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
@@ -2899,7 +2899,7 @@ def merge_pending_message_event(
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             _invalidate_pending_stt_cache(existing)
-            return
+            return True
 
         if existing_has_media or incoming_has_media:
             if incoming_has_media:
@@ -2918,7 +2918,7 @@ def merge_pending_message_event(
             ):
                 existing.message_type = event.message_type
             _invalidate_pending_stt_cache(existing)
-            return
+            return True
 
         if (
             merge_text
@@ -2927,11 +2927,12 @@ def merge_pending_message_event(
         ):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
-            return
+            return True
 
     pending_messages[session_key] = event
     if getattr(event, "owner_id", None):
         event.metadata["relay_owner_disposition"] = "queued"
+    return True
 
 
 # Error substrings that indicate a transient *connection* failure worth retrying.
@@ -6045,6 +6046,37 @@ class BasePlatformAdapter(ABC):
             and _pending_events_can_merge(existing, event)
         )
 
+    def _merge_or_enqueue_pending_message_event(
+        self,
+        session_key: str,
+        event: MessageEvent,
+        *,
+        merge_text: bool = False,
+    ) -> bool:
+        """Merge a compatible pending event or use the runner's bounded FIFO.
+
+        A relay owner cannot replace a different owner already acknowledged as
+        queued.  The runner owns the only real per-session FIFO, including its
+        capacity disposition, so adapter-level direct paths delegate conflicts
+        there rather than inventing a second queue.
+        """
+        if merge_pending_message_event(
+            self._pending_messages, session_key, event, merge_text=merge_text
+        ):
+            return True
+
+        runner = getattr(self, "gateway_runner", None)
+        enqueue = getattr(runner, "_merge_or_enqueue_pending_event", None)
+        if callable(enqueue):
+            return bool(enqueue(session_key, event, merge_text=merge_text))
+
+        # A production adapter always has a gateway runner.  Fail closed in
+        # isolated adapters rather than reporting an owner as absorbed when no
+        # bounded FIFO can preserve its lifecycle.
+        event.metadata["relay_owner_disposition"] = "rejected"
+        event.metadata["relay_owner_disposition_reason"] = "queue_unavailable"
+        return False
+
     def _text_debounce_delay(self, session_key: str) -> float:
         """Return bounded busy-text debounce delay for ``session_key``."""
         state = self._text_debounce_store().get(session_key)
@@ -6068,13 +6100,16 @@ class BasePlatformAdapter(ABC):
             state = store.get(session_key)
             if state is not None and not self._can_merge_text_debounce_events(state.event, event):
                 existing_pending = self._pending_messages.get(session_key)
-                if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
-                    merge_pending_message_event(
-                        self._pending_messages,
-                        session_key,
-                        event,
-                        merge_text=True,
+                if existing_pending is not None:
+                    self._merge_or_enqueue_pending_message_event(
+                        session_key, event, merge_text=True
                     )
+                elif getattr(event, "owner_id", None):
+                    # No pending head means the retained debounce state owns
+                    # the only slot.  Do not let a second owner fall through
+                    # as an apparent relay absorption.
+                    event.metadata["relay_owner_disposition"] = "rejected"
+                    event.metadata["relay_owner_disposition_reason"] = "queue_unavailable"
                 return
 
         now = time.monotonic()
@@ -6146,13 +6181,9 @@ class BasePlatformAdapter(ABC):
         state = store.pop(session_key, None)
         if state is None:
             return False
-        merge_pending_message_event(
-            self._pending_messages,
-            session_key,
-            state.event,
-            merge_text=True,
+        return self._merge_or_enqueue_pending_message_event(
+            session_key, state.event, merge_text=True
         )
-        return True
 
     def _discard_text_debounce(self, session_key: str) -> None:
         """Cancel and drop pending text debounce state for control commands."""
@@ -6709,7 +6740,7 @@ class BasePlatformAdapter(ABC):
             # then process them immediately after the current task finishes.
             if event.message_type == MessageType.PHOTO:
                 logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-                merge_pending_message_event(self._pending_messages, session_key, event)
+                self._merge_or_enqueue_pending_message_event(session_key, event)
                 return  # Don't interrupt now - will run after current task completes
 
             if self._is_queue_text_debounce_candidate(event):
@@ -6728,8 +6759,7 @@ class BasePlatformAdapter(ABC):
                     self.name,
                     session_key,
                 )
-                merge_pending_message_event(
-                    self._pending_messages,
+                self._merge_or_enqueue_pending_message_event(
                     session_key,
                     event,
                     merge_text=event.message_type == MessageType.TEXT,

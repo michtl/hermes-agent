@@ -372,8 +372,8 @@ class TestBusySessionAck:
         assert second.metadata["relay_owner_disposition"] == "queued"
 
     @pytest.mark.asyncio
-    async def test_busy_media_with_different_owner_replaces_stale_pending_head(self):
-        """A distinct relay owner must not inherit a stale album's media."""
+    async def test_busy_media_with_different_owner_preserves_head_and_uses_fifo(self):
+        """Each relay owner gets its own queued media turn in arrival order."""
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         runner._queued_events = {}
@@ -395,10 +395,64 @@ class TestBusySessionAck:
         runner._queue_or_replace_pending_event(sk, first)
         runner._queue_or_replace_pending_event(sk, second)
 
-        assert adapter._pending_messages[sk] is second
+        assert adapter._pending_messages[sk] is first
         assert first.metadata["relay_owner_disposition"] == "queued"
         assert second.metadata["relay_owner_disposition"] == "queued"
+        assert first.media_urls == ["/tmp/first.png"]
         assert second.media_urls == ["/tmp/second.png"]
+        assert runner._queued_events[sk] == [second]
+
+    @pytest.mark.asyncio
+    async def test_busy_text_only_owner_successor_keeps_media_empty(self):
+        """A text-only successor must not inherit the queued owner's media."""
+        runner, _sentinel = _make_runner()
+        adapter = _make_adapter()
+        first = _make_event(text="old image")
+        first.message_type = MessageType.PHOTO
+        first.media_urls = ["/tmp/old.png"]
+        first.media_types = ["image/png"]
+        first.owner_id = "opaque-owner-media-head"
+        second = _make_event(text="text only")
+        second.owner_id = "opaque-owner-text-successor"
+        second.source = first.source
+        sk = build_session_key(first.source)
+        runner.adapters[first.source.platform] = adapter
+
+        runner._queue_or_replace_pending_event(sk, first)
+        runner._queue_or_replace_pending_event(sk, second)
+
+        assert adapter._pending_messages[sk] is first
+        assert first.media_urls == ["/tmp/old.png"]
+        assert second.media_urls == []
+        assert runner._queued_events[sk] == [second]
+
+    @pytest.mark.asyncio
+    async def test_busy_media_successor_is_rejected_when_fifo_is_full(self):
+        """Only the incoming owner is rejected when a distinct-owner FIFO is full."""
+        runner, _sentinel = _make_runner()
+        adapter = _make_adapter()
+        first = _make_event(text="old image")
+        first.message_type = MessageType.PHOTO
+        first.media_urls = ["/tmp/old.png"]
+        first.media_types = ["image/png"]
+        first.owner_id = "opaque-owner-media-head"
+        second = _make_event(text="new image")
+        second.message_type = MessageType.PHOTO
+        second.media_urls = ["/tmp/new.png"]
+        second.media_types = ["image/png"]
+        second.owner_id = "opaque-owner-media-successor"
+        second.source = first.source
+        sk = build_session_key(first.source)
+        runner.adapters[first.source.platform] = adapter
+
+        runner._queue_or_replace_pending_event(sk, first)
+        runner._queue_depth = MagicMock(return_value=runner._BUSY_QUEUE_MAX_PENDING)
+        runner._queue_or_replace_pending_event(sk, second)
+
+        assert adapter._pending_messages[sk] is first
+        assert first.metadata["relay_owner_disposition"] == "queued"
+        assert second.metadata["relay_owner_disposition"] == "rejected"
+        assert second.metadata["relay_owner_disposition_reason"] == "queue_capacity"
 
     @pytest.mark.asyncio
     async def test_queue_capacity_drop_is_an_explicit_negative_owner_disposition(self):
