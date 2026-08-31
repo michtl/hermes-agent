@@ -3084,6 +3084,9 @@ class RelayAdapter(BasePlatformAdapter):
         button→text fallback takes over (same contract as a native adapter's
         failed button send).
         """
+        from tools.approval import _get_approval_timeout
+
+        timeout_s = _get_approval_timeout()
         options: list = [{"id": "once", "label": "Allow Once", "style": "primary"}]
         if not smart_denied and allow_session:
             options.append({"id": "session", "label": "Allow Session"})
@@ -3108,6 +3111,7 @@ class RelayAdapter(BasePlatformAdapter):
         prompt_id = self._mint_prompt(
             "exec_approval",
             {"session_key": session_key, "chat_id": str(chat_id)},
+            timeout_s=timeout_s,
         )
         result = await self._send_prompt(
             chat_id,
@@ -3116,6 +3120,7 @@ class RelayAdapter(BasePlatformAdapter):
             prompt_id=prompt_id,
             options=options,
             metadata=metadata,
+            timeout_s=timeout_s,
         )
         if result is not None:
             return result

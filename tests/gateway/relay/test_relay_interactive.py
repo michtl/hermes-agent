@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional
 
 import pytest
 
+from agent.deadline import MAX_SAFE_TIMEOUT_S
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 from gateway.relay.adapter import RelayAdapter
@@ -121,6 +122,50 @@ async def test_exec_approval_renders_full_option_set():
     state = adapter._pending_prompts[action["prompt_id"]]
     assert state["kind"] == "exec_approval"
     assert state["session_key"] == "sess:1"
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_action_uses_configured_approval_timeout(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "approvals:\n  timeout: 86400\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    adapter, stub = _adapter()
+
+    await adapter.send_exec_approval("c1", "rm -rf /tmp/x", "sess:1")
+
+    assert stub.sent[-1]["timeout_s"] == 86400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        pytest.param("0", 0, id="immediate-timeout"),
+        pytest.param("soon", 300, id="malformed-default"),
+        pytest.param(str(10**18), int(MAX_SAFE_TIMEOUT_S), id="platform-safe-clamp"),
+    ],
+)
+async def test_exec_approval_action_uses_normalized_approval_timeout(
+    tmp_path, monkeypatch, configured, expected
+):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        f"approvals:\n  timeout: {configured}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    adapter, stub = _adapter()
+
+    await adapter.send_exec_approval("c1", "rm -rf /tmp/x", "sess:1")
+
+    assert stub.sent[-1]["timeout_s"] == expected
 
 
 @pytest.mark.asyncio
