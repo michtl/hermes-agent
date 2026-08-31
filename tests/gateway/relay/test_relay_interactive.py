@@ -25,10 +25,14 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-from agent.deadline import MAX_SAFE_TIMEOUT_S
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
-from gateway.relay.adapter import RelayAdapter
+from gateway.relay.adapter import (
+    RELAY_PROMPT_TIMEOUT_MAX_S,
+    RELAY_PROMPT_TIMEOUT_MIN_S,
+    RelayAdapter,
+    _relay_prompt_timeout_s,
+)
 from gateway.relay.descriptor import (
     CONTRACT_VERSION,
     OWNER_BOUND_INTERRUPT_ACK_CAPABILITY,
@@ -143,12 +147,112 @@ async def test_exec_approval_action_uses_configured_approval_timeout(
 
 
 @pytest.mark.asyncio
+async def test_slash_confirm_action_uses_default_timeout_on_registry_and_wire():
+    """send_slash_confirm must drive BOTH the registry and the wire action
+    with tools.slash_confirm.DEFAULT_TIMEOUT_SECONDS (300s) — before this
+    fix neither _mint_prompt nor _send_prompt received any timeout at all,
+    so the registry fell back to _mint_prompt's own 3600s default and the
+    wire action carried no timeout_s key (connector default), silently
+    disagreeing with both tools.slash_confirm's actual 300s timeout AND
+    each other.
+    """
+    from tools.slash_confirm import DEFAULT_TIMEOUT_SECONDS
+
+    adapter, stub = _adapter()
+
+    await adapter.send_slash_confirm(
+        "c1", "Reload MCP", "This invalidates the prompt cache.", "sess:1", "cf-1"
+    )
+
+    action = stub.sent[-1]
+    assert action["timeout_s"] == DEFAULT_TIMEOUT_SECONDS
+    state = adapter._pending_prompts[action["prompt_id"]]
+    assert state["expires_at"] == pytest.approx(
+        time.time() + DEFAULT_TIMEOUT_SECONDS, abs=2
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("configured", "expected"),
     [
-        pytest.param("0", 0, id="immediate-timeout"),
+        pytest.param("7200", 7200, id="configured-clarify-timeout"),
+        pytest.param("not-a-number", 3600, id="invalid-falls-back-to-default"),
+        pytest.param("0", RELAY_PROMPT_TIMEOUT_MAX_S, id="unlimited-maps-to-protocol-max"),
+        pytest.param("-5", RELAY_PROMPT_TIMEOUT_MAX_S, id="negative-maps-to-protocol-max"),
+        pytest.param("200000", RELAY_PROMPT_TIMEOUT_MAX_S, id="overlong-clamps-to-protocol-max"),
+    ],
+)
+async def test_clarify_action_uses_normalized_clarify_timeout_on_registry_and_wire(
+    tmp_path, monkeypatch, configured, expected
+):
+    """send_clarify must drive BOTH the registry and the wire action with the
+    SAME effective timeout, resolved from tools.clarify_gateway's config
+    (agent.clarify_timeout) — before this fix neither call site passed any
+    timeout at all, so a configured clarify timeout never reached the relay
+    lane in either place.
+
+    Local clarify semantics map 0/negative to "wait forever", which the
+    relay wire protocol cannot represent; it maps honestly to the protocol
+    maximum (86400s) instead of silently clamping to the minimum, which
+    would turn "unlimited" into "expires in 30s".
+    """
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        f"agent:\n  clarify_timeout: {configured}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    adapter, stub = _adapter()
+
+    await adapter.send_clarify("c1", "Which environment?", ["staging", "prod"], "cl-1", "sess:1")
+
+    action = stub.sent[-1]
+    assert action["timeout_s"] == expected
+    state = adapter._pending_prompts[action["prompt_id"]]
+    assert state["expires_at"] == pytest.approx(time.time() + expected, abs=2)
+
+
+def test_relay_prompt_timeout_normalizer_direct():
+    """Direct unit coverage of the shared normalizer, independent of config
+    loading: exec/slash clamp low values UP to the protocol minimum, clarify
+    maps its "unlimited" (<=0) sentinel to the protocol maximum, and
+    non-numeric/non-finite input falls back to the kind's own default.
+    """
+    assert _relay_prompt_timeout_s("exec_approval", 0) == RELAY_PROMPT_TIMEOUT_MIN_S
+    assert _relay_prompt_timeout_s("exec_approval", -5) == RELAY_PROMPT_TIMEOUT_MIN_S
+    assert _relay_prompt_timeout_s("exec_approval", 45) == 45
+    assert _relay_prompt_timeout_s("exec_approval", 999999) == RELAY_PROMPT_TIMEOUT_MAX_S
+    assert _relay_prompt_timeout_s("exec_approval", "garbage") == 300
+    assert _relay_prompt_timeout_s("exec_approval", float("nan")) == 300
+    assert _relay_prompt_timeout_s("exec_approval", float("inf")) == 300
+
+    assert _relay_prompt_timeout_s("slash_confirm", 300) == 300
+    assert _relay_prompt_timeout_s("slash_confirm", None) == 300
+
+    assert _relay_prompt_timeout_s("clarify", 0) == RELAY_PROMPT_TIMEOUT_MAX_S
+    assert _relay_prompt_timeout_s("clarify", -1) == RELAY_PROMPT_TIMEOUT_MAX_S
+    assert _relay_prompt_timeout_s("clarify", 7200) == 7200
+    assert _relay_prompt_timeout_s("clarify", "nonsense") == 3600
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        # Local exec semantics: 0/negative means "fail closed immediately"
+        # (tools.approval._get_approval_timeout / the deadline computed from
+        # it). The relay wire protocol has no zero-wait prompt, so the value
+        # clamps UP to the protocol minimum — the closest valid
+        # approximation of an immediate expiry.
+        pytest.param("0", RELAY_PROMPT_TIMEOUT_MIN_S, id="immediate-timeout-clamps-to-min"),
         pytest.param("soon", 300, id="malformed-default"),
-        pytest.param(str(10**18), int(MAX_SAFE_TIMEOUT_S), id="platform-safe-clamp"),
+        # A configured timeout far beyond the relay/MC wire contract (30..
+        # 86400s) clamps DOWN to the protocol maximum — independent of
+        # tools.approval's own much larger platform-safe cap (~1 year),
+        # which only bounds the LOCAL wait, not what the connector accepts.
+        pytest.param(str(10**18), RELAY_PROMPT_TIMEOUT_MAX_S, id="protocol-max-clamp"),
     ],
 )
 async def test_exec_approval_action_uses_normalized_approval_timeout(
@@ -166,6 +270,12 @@ async def test_exec_approval_action_uses_normalized_approval_timeout(
     await adapter.send_exec_approval("c1", "rm -rf /tmp/x", "sess:1")
 
     assert stub.sent[-1]["timeout_s"] == expected
+    # Registry and wire must agree exactly — a split brain lets the
+    # connector's button outlive (or die before) the gateway's own
+    # pending-prompt expiry.
+    prompt_id = stub.sent[-1]["prompt_id"]
+    state = adapter._pending_prompts[prompt_id]
+    assert state["expires_at"] == pytest.approx(time.time() + expected, abs=2)
 
 
 @pytest.mark.asyncio

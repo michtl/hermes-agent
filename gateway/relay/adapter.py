@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import secrets
 import time
@@ -73,6 +74,83 @@ _LEN_FNS: Dict[str, Callable[[str], int]] = {
     "chars": len,
     "utf16": _utf16_len,
 }
+
+# Wire contract with the connector for a structured relay prompt's TTL
+# (the `prompt` op's `timeout_s` field, and the matching registry expiry in
+# `_mint_prompt`): a valid `timeout_s` is a positive, finite integer in this
+# range (docs/relay-connector-contract.md notes `timeout_s` is advisory —
+# expiry is enforced gateway-side — but a well-formed value is still
+# required so the connector's own countdown UI and the gateway's registry
+# never disagree). Named here so exec approval, slash-confirm, and clarify
+# share one clamp instead of three independently drifting copies.
+RELAY_PROMPT_TIMEOUT_MIN_S = 30
+RELAY_PROMPT_TIMEOUT_MAX_S = 86400
+
+# Per-prompt-kind fallback when the local timeout source is missing or
+# non-numeric — mirrors each tool's own local default: tools.approval's
+# config default (see tools.approval._get_approval_timeout), plain
+# tools.slash_confirm.DEFAULT_TIMEOUT_SECONDS, and tools.clarify_gateway's
+# config default (see tools.clarify_gateway.get_clarify_timeout).
+_RELAY_PROMPT_TIMEOUT_DEFAULT_S: Dict[str, int] = {
+    "exec_approval": 300,
+    "slash_confirm": 300,
+    "clarify": 3600,
+}
+
+
+def _relay_prompt_timeout_s(kind: str, raw: Any) -> int:
+    """Normalize one prompt kind's local timeout into the relay wire/registry TTL.
+
+    ``_mint_prompt``'s registry expiry and ``_send_prompt``'s wire
+    ``timeout_s`` MUST be driven by the exact same effective number for a
+    given prompt. Computing them separately is a split brain: the
+    connector's button can outlive the gateway's own pending-prompt entry
+    (a still-live press "resolves" nothing, silently, once the registry has
+    expired it), or the registry can outlive what the connector told the
+    user (the button is already gone but the gateway keeps waiting the full
+    local timeout).
+
+    Each prompt kind's LOCAL timeout has semantics the relay protocol
+    (``RELAY_PROMPT_TIMEOUT_MIN_S``..``RELAY_PROMPT_TIMEOUT_MAX_S``) cannot
+    represent at the extremes:
+
+    * **exec approval** (``tools.approval._get_approval_timeout``): 0 or
+      negative means "fail closed immediately" locally — the wait deadline
+      is computed as ``now + max(timeout, 0)``, i.e. ``now``. There is no
+      zero-wait prompt on the wire, so the plain clamp below already does
+      the right thing: a value at or below the minimum is raised to
+      ``RELAY_PROMPT_TIMEOUT_MIN_S``, the closest valid approximation of an
+      immediate expiry.
+    * **clarify** (``tools.clarify_gateway.get_clarify_timeout``): 0 or
+      negative means "wait forever" locally (see
+      ``tools.clarify_gateway.wait_for_response``). Letting that fall
+      through the plain clamp would turn "unlimited" into "expires in
+      ``RELAY_PROMPT_TIMEOUT_MIN_S`` seconds" — the opposite of the
+      configured intent. Mapped instead, honestly, to
+      ``RELAY_PROMPT_TIMEOUT_MAX_S``: the relay adapter cannot represent a
+      truly unlimited wait, so "as long as the protocol allows" is the
+      closest approximation (documented adapter boundary).
+    * **slash-confirm** (``tools.slash_confirm.DEFAULT_TIMEOUT_SECONDS``): a
+      plain 300s constant, always inside range — no special-casing needed.
+
+    Non-numeric or non-finite ``raw`` (bad config, NaN/inf) falls back to
+    the kind's own local default before clamping.
+    """
+    default = _RELAY_PROMPT_TIMEOUT_DEFAULT_S.get(kind, RELAY_PROMPT_TIMEOUT_MIN_S)
+    if kind == "clarify":
+        try:
+            if raw is not None and float(raw) <= 0:
+                return RELAY_PROMPT_TIMEOUT_MAX_S
+        except (TypeError, ValueError):
+            pass
+    try:
+        value = float(raw)
+        if not math.isfinite(value):
+            value = float(default)
+    except (TypeError, ValueError):
+        value = float(default)
+    value = max(RELAY_PROMPT_TIMEOUT_MIN_S, min(RELAY_PROMPT_TIMEOUT_MAX_S, value))
+    return int(value)
 
 
 class RelayAdapter(BasePlatformAdapter):
@@ -3086,7 +3164,7 @@ class RelayAdapter(BasePlatformAdapter):
         """
         from tools.approval import _get_approval_timeout
 
-        timeout_s = _get_approval_timeout()
+        timeout_s = _relay_prompt_timeout_s("exec_approval", _get_approval_timeout())
         options: list = [{"id": "once", "label": "Allow Once", "style": "primary"}]
         if not smart_denied and allow_session:
             options.append({"id": "session", "label": "Allow Session"})
@@ -3143,6 +3221,9 @@ class RelayAdapter(BasePlatformAdapter):
         native button handlers call. Falls back (success=False) to the
         gateway's text-intercept flow when the prompt lane is unavailable.
         """
+        from tools.slash_confirm import DEFAULT_TIMEOUT_SECONDS
+
+        timeout_s = _relay_prompt_timeout_s("slash_confirm", DEFAULT_TIMEOUT_SECONDS)
         options = [
             {"id": "once", "label": "Approve Once", "style": "primary"},
             {"id": "always", "label": "Always Approve"},
@@ -3156,6 +3237,7 @@ class RelayAdapter(BasePlatformAdapter):
                 "confirm_id": confirm_id,
                 "chat_id": str(chat_id),
             },
+            timeout_s=timeout_s,
         )
         result = await self._send_prompt(
             chat_id,
@@ -3164,6 +3246,7 @@ class RelayAdapter(BasePlatformAdapter):
             prompt_id=prompt_id,
             options=options,
             metadata=metadata,
+            timeout_s=timeout_s,
         )
         if result is not None:
             return result
@@ -3193,6 +3276,9 @@ class RelayAdapter(BasePlatformAdapter):
         registry maps ids back to the real strings on the answer.
         """
         if choices and self.descriptor.supports_op("prompt"):
+            from tools.clarify_gateway import get_clarify_timeout
+
+            timeout_s = _relay_prompt_timeout_s("clarify", get_clarify_timeout())
             options = [
                 {"id": f"c{i}", "label": str(choice)[:75]}
                 for i, choice in enumerate(choices)
@@ -3206,6 +3292,7 @@ class RelayAdapter(BasePlatformAdapter):
                     "choices": [str(c) for c in choices],
                     "chat_id": str(chat_id),
                 },
+                timeout_s=timeout_s,
             )
             result = await self._send_prompt(
                 chat_id,
@@ -3214,6 +3301,7 @@ class RelayAdapter(BasePlatformAdapter):
                 prompt_id=prompt_id,
                 options=options,
                 metadata=metadata,
+                timeout_s=timeout_s,
             )
             if result is not None:
                 return result
